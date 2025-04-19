@@ -227,7 +227,8 @@ def split_train_test_data(
     test_years : List[int]
         List of years to include in the testing set
     min_history_days : int, optional
-        Minimum number of trading days required for feature calculation
+        Minimum number of trading days required for feature calculation.
+        Note: An extra day will be added internally to account for target creation.
         
     Returns:
     --------
@@ -255,6 +256,9 @@ def split_train_test_data(
     train_data = all_data[all_data['year'].isin(train_years)]
     test_data = all_data[all_data['year'].isin(test_years)]
     
+    # Add 1 day to min_history_days to account for target creation
+    required_days = min_history_days + 1
+    
     # Find tickers that have sufficient data in both train and test periods
     train_ticker_counts = train_data.groupby('ticker').size()
     test_ticker_counts = test_data.groupby('ticker').size()
@@ -263,7 +267,7 @@ def split_train_test_data(
     eligible_tickers = [
         ticker for ticker in train_ticker_counts.index
         if ticker in test_ticker_counts.index
-        and train_ticker_counts[ticker] >= min_history_days
+        and train_ticker_counts[ticker] >= required_days
         and test_ticker_counts[ticker] > 0
     ]
     
@@ -351,10 +355,13 @@ def create_time_based_cv_folds(
         train_ticker_counts = fold_train_data.groupby('ticker').size()
         test_ticker_counts = fold_test_data.groupby('ticker').size()
         
+        # Add 1 day to min_history_days to account for target creation
+        required_days = min_history_days + 1
+        
         eligible_tickers = [
             ticker for ticker in train_ticker_counts.index
             if ticker in test_ticker_counts.index
-            and train_ticker_counts[ticker] >= min_history_days
+            and train_ticker_counts[ticker] >= required_days
             and test_ticker_counts[ticker] > 0
         ]
         

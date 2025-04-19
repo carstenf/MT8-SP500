@@ -23,8 +23,12 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import BaseEstimator, ClassifierMixin
-import xgboost as xgb
+from sklearn.preprocessing import LabelEncoder
 import lightgbm as lgb
+
+from xgboost import XGBClassifier
+
+
 
 # For Neural Network
 from sklearn.neural_network import MLPClassifier
@@ -273,7 +277,6 @@ def train_xgboost(
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'objective': 'binary:logistic',
-        'eval_metric': 'auc',
         'random_state': 42
     }
     
@@ -290,16 +293,22 @@ def train_xgboost(
     
     # Create and train the model
     start_time = datetime.now()
-    
-    model = xgb.XGBClassifier(**default_params)
-    
-    # If validation data is provided, use early stopping
+
+
+
+    # Build the model
+    model = XGBClassifier(
+        base_score=0.5,
+        importance_type='gain',
+        **default_params  # this should include eval_metric already
+    )
+
+    # Fit the model
     if X_val is not None and y_val is not None:
         model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=10,
-            verbose=False
+            verbose=True  # ✅ works with your version
         )
     else:
         model.fit(X_train, y_train)
@@ -840,11 +849,15 @@ def perform_cross_validation(
         logger.info(f"Training on fold {fold_num} ({i+1}/{len(data_folds)})")
         
         # Get training and testing data
-        X_train = fold['train_data'].drop(columns=['target']) if 'target' in fold['train_data'].columns else fold['train_data']
-        y_train = fold['train_data']['target'] if 'target' in fold['train_data'].columns else None
-        
-        X_test = fold['test_data'].drop(columns=['target']) if 'target' in fold['test_data'].columns else fold['test_data']
-        y_test = fold['test_data']['target'] if 'target' in fold['test_data'].columns else None
+        X_train = fold['train_features']
+        y_train = fold['train_targets']
+        X_test = fold['test_features']
+        y_test = fold['test_targets']
+
+        # Verify we have data
+        if X_train is None or y_train is None or X_test is None or y_test is None:
+            logger.error(f"Missing data in fold {fold_num}")
+            continue
         
         # Check if we have target data
         if y_train is None or y_test is None:
@@ -942,9 +955,12 @@ def perform_cross_validation(
             'stability_score': 1 - feature_df['cv'].mean()  # Higher is more stable
         }
     
+    # Format average metrics nicely
+    bal_acc = avg_metrics.get('balanced_accuracy', 0)
+    roc_auc = avg_metrics.get('roc_auc', 0)
     logger.info(f"Cross-validation complete. "
-                f"Average balanced accuracy: {avg_metrics.get('balanced_accuracy', 'N/A'):.4f}, "
-                f"Average ROC-AUC: {avg_metrics.get('roc_auc', 'N/A'):.4f}")
+                f"Average balanced accuracy: {bal_acc:.4f}, "
+                f"Average ROC-AUC: {roc_auc:.4f}")
     
     return {
         'model_type': model_type,

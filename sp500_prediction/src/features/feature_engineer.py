@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def calculate_returns(data: pd.DataFrame, price_col: str = 'close') -> pd.DataFrame:
     """
-    Calculate daily returns for each stock.
+    Calculate daily returns for each stock using vectorized operations.
     
     Parameters:
     -----------
@@ -45,21 +45,11 @@ def calculate_returns(data: pd.DataFrame, price_col: str = 'close') -> pd.DataFr
         logger.error(f"Price column '{price_col}' not found in data.")
         return pd.DataFrame()
     
-    # Make a copy to avoid modifying original data
-    df = data.copy()
+    # Create returns DataFrame
+    returns = pd.DataFrame(index=data.index)
     
-    # Calculate returns for each ticker separately to avoid lookahead bias
-    returns = pd.DataFrame(index=df.index)
-    
-    for ticker in df.index.get_level_values('ticker').unique():
-        # Get data for this ticker
-        ticker_data = df.loc[ticker]
-        
-        # Calculate returns: (price_t - price_t-1) / price_t-1
-        ticker_returns = ticker_data[price_col].pct_change()
-        
-        # Store in the returns DataFrame
-        returns.loc[ticker, 'return'] = ticker_returns
+    # Calculate returns for all tickers at once using groupby
+    returns['return'] = data.groupby(level='ticker')[price_col].pct_change()
     
     logger.info(f"Calculated returns for {len(returns.index.get_level_values('ticker').unique())} tickers")
     return returns
@@ -144,7 +134,7 @@ def create_lagged_features(
     long_term_lags: List[int] = None
 ) -> pd.DataFrame:
     """
-    Create lagged features for each ticker.
+    Create lagged features using vectorized operations.
     
     Parameters:
     -----------
@@ -172,42 +162,42 @@ def create_lagged_features(
         logger.error(f"Feature column '{feature_col}' not found in data.")
         return pd.DataFrame()
     
-    # Create copy to avoid modifying original data
+    # Create features DataFrame with same index as input data
     features = pd.DataFrame(index=data.index)
+    
+    # Get the feature data
+    feature_data = data[feature_col]
     
     # Set long-term lags if not provided
     if long_term_lags is None:
         # Create lags from 40 to 240 in steps of 10
         long_term_lags = list(range(40, 241, 10))
     
-    # Process each ticker separately to avoid lookahead bias
-    for ticker in data.index.get_level_values('ticker').unique():
-        # Get data for this ticker
-        ticker_data = data.loc[ticker, feature_col]
+    # Create all lags in one go using groupby
+    logger.info("Creating daily and long-term lags...")
+    
+    # Combine all lag periods
+    all_lags = list(range(1, max_lag + 1)) + [lag for lag in long_term_lags if lag > max_lag]
+    
+    # Create lags using groupby and shift
+    for lag in all_lags:
+        features[f'lag_{lag}d'] = feature_data.groupby(level='ticker').shift(lag)
+    
+    # Create window-based features
+    logger.info("Creating window-based features...")
+    windows = [5, 10, 20, 60, 120, 240]
+    
+    # Group by ticker for rolling calculations
+    grouped = feature_data.groupby(level='ticker')
+    
+    for window in windows:
+        # Shift by 1 to avoid lookahead bias, then calculate rolling statistics
+        shifted_data = grouped.shift(1)
         
-        # Create daily lags from 1 to max_lag
-        for lag in range(1, max_lag + 1):
-            features.loc[ticker, f'lag_{lag}d'] = ticker_data.shift(lag)
-        
-        # Create long-term lags
-        for lag in long_term_lags:
-            if lag > max_lag:  # Avoid duplicates
-                features.loc[ticker, f'lag_{lag}d'] = ticker_data.shift(lag)
-        
-        # Create cumulative return features for various windows
-        # For stock returns, this is equivalent to the total return over the window
-        for window in [5, 10, 20, 60, 120, 240]:
-            # Cumulative return over the window
-            rolling_sum = ticker_data.shift(1).rolling(window=window).sum()
-            features.loc[ticker, f'cum_{window}d'] = rolling_sum
-            
-            # Average return over the window (momentum)
-            rolling_mean = ticker_data.shift(1).rolling(window=window).mean()
-            features.loc[ticker, f'avg_{window}d'] = rolling_mean
-            
-            # Volatility over the window
-            rolling_std = ticker_data.shift(1).rolling(window=window).std()
-            features.loc[ticker, f'vol_{window}d'] = rolling_std
+        # Calculate window features all at once
+        features[f'cum_{window}d'] = shifted_data.rolling(window=window).sum()
+        features[f'avg_{window}d'] = shifted_data.rolling(window=window).mean()
+        features[f'vol_{window}d'] = shifted_data.rolling(window=window).std()
     
     # Record the number of features created
     num_features = len(features.columns)
@@ -219,6 +209,7 @@ def create_lagged_features(
 def create_target_variable(excess_returns: pd.DataFrame) -> pd.DataFrame:
     """
     Create binary target variable for next-day excess return direction.
+    Uses vectorized operations for better performance.
     
     Parameters:
     -----------
@@ -240,18 +231,12 @@ def create_target_variable(excess_returns: pd.DataFrame) -> pd.DataFrame:
         logger.error("'excess_return' column not found in data.")
         return pd.DataFrame()
     
-    # Create copy to avoid modifying original data
+    # Create target variable using groupby for vectorized operations
     target_df = pd.DataFrame(index=excess_returns.index)
     
-    # Process each ticker separately to avoid lookahead bias
-    for ticker in excess_returns.index.get_level_values('ticker').unique():
-        # Get excess returns for this ticker
-        ticker_excess_returns = excess_returns.loc[ticker, 'excess_return']
-        
-        # Create target variable for next-day direction
-        # 1 = positive excess return, 0 = negative excess return
-        next_day_direction = ticker_excess_returns.shift(-1) > 0
-        target_df.loc[ticker, 'target'] = next_day_direction.astype(int)
+    # Create next-day direction (1 = positive excess return, 0 = negative excess return)
+    next_day_returns = excess_returns.groupby(level='ticker')['excess_return'].shift(-1)
+    target_df['target'] = (next_day_returns > 0).astype(int)
     
     logger.info("Target variable created successfully")
     return target_df
@@ -322,9 +307,12 @@ def analyze_class_distribution(target: pd.DataFrame) -> Dict:
     if 'target' not in target.columns:
         logger.error("'target' column not found in data.")
         return {}
-    
+        
     # Calculate overall class distribution
     class_counts = target['target'].value_counts()
+    if len(class_counts) == 0:
+        logger.error("No valid target values found after filtering.")
+        return {}
     class_proportions = target['target'].value_counts(normalize=True)
     
     # Check if there's a severe imbalance

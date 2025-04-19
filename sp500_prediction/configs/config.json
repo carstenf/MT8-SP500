@@ -1,0 +1,104 @@
+{
+  "pipeline": {
+    "data_file": "data/raw/sp500_data.h5",
+    "output_dir": "results",
+    "model_type": "xgboost",
+    "cv_folds": 5,
+    "train_start_year": null,
+    "test_years": null,
+    "save_model": true,
+    "feature_selection": false
+  },
+  "data": {
+    "min_history_days": 240
+  },
+  "features": {
+    "price_col": "close",
+    "max_lag": 40,
+    "long_term_lags": [40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240],
+    "apply_scaling": true
+  },
+  "model": {
+    "logistic_regression": {
+      "max_iter": 1000,
+      "random_state": 42
+    },
+    "random_forest": {
+      "n_estimators": 100,
+      "max_depth": 15,
+      "min_samples_split": 10,
+      "min_samples_leaf": 5,
+      "max_features": "sqrt",
+      "bootstrap": true,
+      "criterion": "entropy",
+      "random_state": 42
+    },
+    "xgboost": {
+      "n_estimators": 100,
+      "max_depth": 6,
+      "learning_rate": 0.1,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "objective": "binary:logistic",
+      "eval_metric": "auc",
+      "random_state": 42 
+    },
+    "lightgbm": {
+      "n_estimators": 100,
+      "num_leaves": 31,
+      "max_depth": -1,
+      "learning_rate": 0.1,
+      "feature_fraction": 0.8,
+      "bagging_fraction": 0.8,
+      "bagging_freq": 5,
+      "objective": "binary",
+      "metric": "auc",
+      "random_state": 42
+    },
+    "neural_network": {
+      "hidden_layer_sizes": [100, 50, 25],
+      "activation": "relu",
+      "solver": "adam",
+      "alpha": 0.0001,
+      "batch_size": "auto",
+      "learning_rate": "adaptive",
+      "learning_rate_init": 0.001,
+      "max_iter": 200,
+      "early_stopping": true,
+      "validation_fraction": 0.2,
+      "random_state": 42
+    }
+  },
+  "evaluation": {
+    "output_dirs": {
+      "base": "results",
+      "plots": "results/plots"
+    },
+    "feature_importance": {
+      "method": "model_based",
+      "n_top_features": 20,
+      "n_repeats": 10,
+      "random_state": 42
+    },
+    "metrics": {
+      "balanced_accuracy_threshold": 0.55,
+      "zero_division": 0,
+      "slope_threshold": 0.01
+    },
+    "visualization": {
+      "plot_figsize": {
+        "default": [10, 6],
+        "feature_importance": [12, 8],
+        "confusion_matrix": [8, 6]
+      },
+      "plot_style": {
+        "linewidth": 2,
+        "alpha": 0.1
+      }
+    },
+    "time_analysis": {
+      "time_unit": "month",
+      "min_periods_for_trend": 3
+    }
+  }
+}
