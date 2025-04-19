@@ -117,7 +117,8 @@ def calculate_performance_metrics(
 
 def analyze_predictions_by_ticker(
     predictions: pd.DataFrame,
-    excess_returns: pd.DataFrame
+    excess_returns: pd.DataFrame,
+    config: Optional[Dict] = None
 ) -> Dict:
     """
     Analyze prediction performance by ticker.
@@ -227,7 +228,8 @@ def analyze_predictions_by_ticker(
 
 def analyze_predictions_by_time(
     predictions: pd.DataFrame,
-    time_unit: str = 'month'
+    time_unit: str = 'month',
+    config: Optional[Dict] = None
 ) -> Dict:
     """
     Analyze prediction performance by time periods.
@@ -1156,7 +1158,7 @@ class ModelEvaluator:
             y_test, 
             y_pred, 
             y_prob, 
-            config=self.config.get('metrics', None)
+            config=self.config
         )
         
         # Store the results
@@ -1552,7 +1554,8 @@ def calculate_performance_metrics(
 
 def analyze_predictions_by_ticker(
     predictions: pd.DataFrame,
-    excess_returns: pd.DataFrame
+    excess_returns: pd.DataFrame,
+    config: Optional[Dict] = None
 ) -> Dict:
     """
     Analyze prediction performance by ticker.
@@ -1623,7 +1626,7 @@ def analyze_predictions_by_ticker(
             y_true, 
             y_pred, 
             y_prob, 
-            config=metrics_config or self.config.get('metrics', None)
+            config=config
         )
         
         # Calculate Profit & Loss
@@ -1667,7 +1670,8 @@ def analyze_predictions_by_ticker(
 
 def analyze_predictions_by_time(
     predictions: pd.DataFrame,
-    time_unit: str = 'month'
+    time_unit: str = 'month',
+    config: Optional[Dict] = None
 ) -> Dict:
     """
     Analyze prediction performance by time periods.
@@ -1738,7 +1742,7 @@ def analyze_predictions_by_time(
             y_true, 
             y_pred, 
             y_prob,
-            config=metrics_config or self.config.get('metrics', None)
+            config=config
         )
         
         # Calculate win rate by ticker
