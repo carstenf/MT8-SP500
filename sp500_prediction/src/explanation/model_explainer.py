@@ -369,9 +369,9 @@ def create_partial_dependence_plots(
                 kind='average'
             )
             
-            # Extract values
-            pd_feature_values = pd_results["values"][0]
-            pd_feature_predictions = pd_results["average"][0]
+            # Extract values from partial dependence results
+            pd_feature_values = pd_results.grid_values[0]  # Grid points
+            pd_feature_predictions = pd_results.average.squeeze()  # Squeeze to 1D array
             
             # Store values for return
             pdp_values[feature] = {
@@ -512,16 +512,16 @@ def create_ice_plots(
                 kind='both'  # Calculate both individual and average
             )
             
-            # Extract values
-            feature_values = pd_results["values"][0]
-            individual_predictions = pd_results["individual"][0]
-            average_predictions = pd_results["average"][0]
+            # Extract values from partial dependence results
+            feature_values = pd_results.grid_values[0]  # Grid points
+            individual_predictions = pd_results.individual.squeeze()  # Remove extra dimension
+            average_predictions = pd_results.average.squeeze()  # Remove extra dimension
             
             # Create plot
             plt.figure(figsize=(12, 8))
             
             # Plot individual ICE lines
-            for i in range(individual_predictions.shape[0]):
+            for i in range(len(individual_predictions)):
                 plt.plot(feature_values, individual_predictions[i], 'C0-', alpha=0.1)
             
             # Plot average (PDP)
@@ -613,16 +613,21 @@ def create_force_plot(
         
         # Get the instance data
         if isinstance(instance_idx, int):
-            if instance_idx >= len(X_sample):
-                logger.warning(f"Instance index {instance_idx} out of bounds, using first instance")
+            try:
+                instance = X_sample.iloc[instance_idx]
+                instance_shap = shap_values[instance_idx]
+            except IndexError:
+                # Use first instance if index is out of bounds
+                logger.debug(f"Using first instance instead of index {instance_idx}")
+                instance = X_sample.iloc[0]
+                instance_shap = shap_values[0]
                 instance_idx = 0
-                
-            instance = X_sample.iloc[instance_idx]
-            instance_shap = shap_values[instance_idx]
         else:
-            logger.warning(f"Invalid instance index, using first instance")
+            # Use first instance if index is not an integer
+            logger.debug("Using first instance due to non-integer index")
             instance = X_sample.iloc[0]
             instance_shap = shap_values[0]
+            instance_idx = 0
             
         if plot_format == 'html':
             # Create and save HTML version (preferred for interactivity)
@@ -862,6 +867,7 @@ def create_explanation_for_stock(
     output_dir: str = 'results/explanation/case_studies',
     shap_values: np.ndarray = None,
     explainer: Any = None,
+    X_sample: pd.DataFrame = None,
     show_plots: bool = False
 ) -> Dict:
     """
@@ -883,6 +889,8 @@ def create_explanation_for_stock(
         Pre-computed SHAP values (if available)
     explainer : Any, optional
         Pre-computed SHAP explainer (if available)
+    X_sample : pd.DataFrame, optional
+        Pre-computed sample data used for SHAP values (if available)
     show_plots : bool, optional
         Whether to display plots (interactive sessions only)
         
@@ -920,37 +928,64 @@ def create_explanation_for_stock(
         
         # Calculate SHAP values if not provided
         if shap_values is None or explainer is None:
-            shap_result = generate_shap_values(model, instance_df)
-            if not shap_result:
+            instance_result = generate_shap_values(model, instance_df)
+            if not instance_result:
                 logger.error("Failed to generate SHAP values")
                 return {
                     'prediction': prediction,
                     'prediction_class': prediction_class,
                     'prediction_label': prediction_label
                 }
-            local_shap_values = shap_result['shap_values']
-            local_explainer = shap_result['explainer']
+            local_shap_values = instance_result['shap_values']
+            local_explainer = instance_result['explainer']
+            expected_value = instance_result['expected_value']
         else:
-            # Find the index of this instance in the original data
-            if instance_idx is None:
-                # Try to find the index in the original data
+            # When using pre-computed SHAP values, we need to check if instance is in the sample
+            try:
                 if isinstance(X.index, pd.MultiIndex):
-                    try:
-                        instance_idx = list(X.index).index((ticker, date))
+                    # Try to find instance in the original data that generated SHAP values
+                    if X_sample is not None:
+                        sample_loc = np.where((X_sample.index.get_level_values(0) == ticker) & 
+                                            (X_sample.index.get_level_values(1) == date))[0]
+                    else:
+                        # If no sampled data, calculate new SHAP values
+                        logger.info("No sampled data provided, calculating new SHAP values")
+                        instance_result = generate_shap_values(model, instance_df)
+                        local_shap_values = instance_result['shap_values']
+                        local_explainer = instance_result['explainer']
+                        sample_loc = []  # Continue to else branch for new calculation
+                    
+                    if len(sample_loc) > 0:
+                        # Instance found in sample, use pre-computed values
+                        instance_idx = sample_loc[0]
                         local_shap_values = np.array([shap_values[instance_idx]])
-                    except ValueError:
-                        logger.error(f"Instance ({ticker}, {date}) not found in original data")
-                        return {}
+                    else:
+                        # Instance not in sample, need to calculate new SHAP values
+                        logger.info("Instance not found in sampled data, calculating new SHAP values")
+                        instance_result = generate_shap_values(model, instance_df)
+                        local_shap_values = instance_result['shap_values']
+                        local_explainer = instance_result['explainer']
                 else:
-                    logger.error("Cannot find instance in provided SHAP values")
+                    logger.error("Cannot find instance in SHAP values, input must have multi-index")
                     return {}
-            else:
-                local_shap_values = np.array([shap_values[instance_idx]])
+            except Exception as e:
+                logger.error(f"Error finding instance in SHAP values: {str(e)}")
+                return {}
             local_explainer = explainer
+            expected_value = local_explainer.expected_value
+            if isinstance(expected_value, list):
+                expected_value = expected_value[1]  # For binary classification, use positive class
         
         # Create waterfall plot for the instance
         plt.figure(figsize=(12, 8))
-        shap.plots.waterfall(local_shap_values[0], max_display=10, show=False)
+        # Convert to SHAP Explanation object for waterfall plot
+        explanation = shap.Explanation(
+            values=local_shap_values[0],
+            base_values=expected_value,  # Use the processed expected_value
+            data=instance_df.iloc[0],
+            feature_names=instance_df.columns.tolist()
+        )
+        shap.plots.waterfall(explanation, max_display=10, show=False)
         
         # Save waterfall plot
         waterfall_path = os.path.join(output_dir, f'{ticker}_{date.strftime("%Y-%m-%d")}_waterfall.png')
@@ -1191,16 +1226,16 @@ def analyze_correct_vs_incorrect(
             instance = X_correct.iloc[i:i+1]
             instance_shap = shap_correct['shap_values'][i:i+1]
             
-            # Create force plot
+            # Create force plot with unique index and filename
             force_path = create_force_plot(
                 shap_correct['explainer'],
                 instance_shap,
                 instance,
-                i,
+                correct_samples[i],  # Use the actual sample index
                 os.path.join(output_dir, 'correct'),
                 plot_format='html',
                 show_plots=False
-            )
+            ).replace('force_plot_', f'force_plot_correct_{i}_')  # Ensure unique filename
             
             # Determine driving factors
             feature_contributions = []
@@ -1227,16 +1262,16 @@ def analyze_correct_vs_incorrect(
             instance = X_incorrect.iloc[i:i+1]
             instance_shap = shap_incorrect['shap_values'][i:i+1]
             
-            # Create force plot
+            # Create force plot with unique index and filename
             force_path = create_force_plot(
                 shap_incorrect['explainer'],
                 instance_shap,
                 instance,
-                i,
+                incorrect_samples[i],  # Use the actual sample index
                 os.path.join(output_dir, 'incorrect'),
                 plot_format='html',
                 show_plots=False
-            )
+            ).replace('force_plot_', f'force_plot_incorrect_{i}_')  # Ensure unique filename
             
             # Determine driving factors
             feature_contributions = []
@@ -1495,16 +1530,19 @@ def generate_explanation_report(
     
     # Save the report as JSON
     try:
+        def convert_to_json_serializable(obj):
+            if isinstance(obj, (np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_json_serializable(item) for item in obj]
+            return obj
+
         # Convert non-JSON serializable elements
-        report_json = {k: report[k] for k in report}
-        
-        # Handle non-serializable types
-        for key in report_json:
-            if key == 'shap_summary' and 'expected_value' in report_json[key]:
-                if isinstance(report_json[key]['expected_value'], np.ndarray):
-                    report_json[key]['expected_value'] = report_json[key]['expected_value'].tolist()
-                elif isinstance(report_json[key]['expected_value'], np.number):
-                    report_json[key]['expected_value'] = float(report_json[key]['expected_value'])
+        report_json = convert_to_json_serializable(report)
         
         # Save report
         report_path = os.path.join(output_dir, 'explanation_report.json')
@@ -1553,6 +1591,7 @@ class ModelExplainer:
         self.explainer = None
         self.shap_values = None
         self.feature_names = None
+        self.X_sample = None  # Store sampled data used for SHAP values
         
     def explain_model(
         self,
@@ -1612,6 +1651,7 @@ class ModelExplainer:
                 self.explainer = shap_result['explainer']
                 self.shap_values = shap_result['shap_values']
                 self.feature_names = X.columns.tolist()
+                self.X_sample = shap_result['X_sample']
         
         return report
     
@@ -1652,6 +1692,7 @@ class ModelExplainer:
             output_dir=stock_dir,
             shap_values=self.shap_values,
             explainer=self.explainer,
+            X_sample=self.X_sample,
             show_plots=show_plots
         )
     

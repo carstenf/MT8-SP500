@@ -8,7 +8,7 @@
     "f1": 0.38982931851953817,
     "roc_auc": 0.5038186261074583
   },
-  "avg_training_time": 3.4943961999999997,
+  "avg_training_time": 3.5452822,
   "feature_stability": {
     "feature_importances_df": [
       {
