@@ -40,7 +40,7 @@ A Python-based machine learning pipeline to predict next-day stock movements for
    - Output: Explanation visualizations
 
 ## Technology Stack
-- Python 3.8+
+- Python 3.12+
 - Core libraries: pandas, numpy, scikit-learn, matplotlib, shap
 - ML libraries: xgboost, lightgbm
 - Storage: HDF5
