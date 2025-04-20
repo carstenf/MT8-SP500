@@ -96,16 +96,16 @@ def calculate_performance_metrics(
     metrics = {
         'accuracy': accuracy_score(y_true, y_pred),
         'balanced_accuracy': balanced_accuracy_score(y_true, y_pred),
-        'precision': precision_score(y_true, y_pred, zero_division=zero_div),
-        'recall': recall_score(y_true, y_pred, zero_division=zero_div),
-        'f1': f1_score(y_true, y_pred, zero_division=zero_div),
+        'precision': precision_score(y_true, y_pred, zero_division=zero_div, average='weighted'),
+        'recall': recall_score(y_true, y_pred, zero_division=zero_div, average='weighted'),
+        'f1': f1_score(y_true, y_pred, zero_division=zero_div, average='weighted'),
         'confusion_matrix': confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
         'is_single_class': is_single_class,
         'meets_accuracy_threshold': False  # Initialize to False
     }
     
-    # Add class report
-    class_report = classification_report(y_true, y_pred, output_dict=True)
+    # Add class report with zero division handling
+    class_report = classification_report(y_true, y_pred, output_dict=True, zero_division=zero_div)
     metrics['class_report'] = class_report
     
     # Add probability-based metrics if probabilities are provided and we have multiple classes

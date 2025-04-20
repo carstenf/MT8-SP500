@@ -144,3 +144,55 @@ The evaluation includes:
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+
+
+
+# Additional Features
+
+## Model Explainability
+
+The project now includes a comprehensive model explainability module in `src/explanation/model_explainer.py`. This module provides:
+
+- SHAP (SHapley Additive exPlanations) values for transparent model predictions
+- Partial Dependence Plots (PDP) to visualize feature-prediction relationships
+- Individual Conditional Expectation (ICE) plots for detailed instance analysis
+- Feature interaction analysis to identify important feature dependencies
+- Case studies for specific stock predictions with detailed explanations
+- Error analysis comparing correct and incorrect predictions
+
+### Using the Model Explainer
+
+```python
+from src.explanation.model_explainer import ModelExplainer
+
+# Initialize explainer
+explainer = ModelExplainer(config={'output_dir': 'results/explanation'})
+
+# Generate comprehensive model explanation
+explanation = explainer.explain_model(
+    model=trained_model,
+    X=X_test,
+    y=y_test,
+    n_top_features=20,
+    sample_size=100
+)
+
+# Explain specific stock prediction
+stock_explanation = explainer.explain_stock_prediction(
+    model=trained_model,
+    X=X_test,
+    ticker='AAPL',
+    date=pd.Timestamp('2022-01-15')
+)
+
+# Analyze prediction errors
+error_analysis = explainer.analyze_model_errors(
+    model=trained_model,
+    X=X_test,
+    y=y_test,
+    n_samples=10
+)
+
+
+

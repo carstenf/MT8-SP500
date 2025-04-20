@@ -233,7 +233,7 @@ This project aims to develop a machine learning classification model to predict 
   - SHAP summary and dependency plots
   - Recommendations for future improvements
 
-### 7.2 Technical Documentation
+### 7.2 Technical Documentation (Performance Report LLM readable)
 - Create detailed technical document containing:
   - Complete model specifications and parameters
   - Raw performance metrics for all evaluation periods
@@ -244,14 +244,6 @@ This project aims to develop a machine learning classification model to predict 
   - Quantitative performance breakdown by market conditions
   - Technical details suitable for LLM analysis and collaboration
   - Implementation details and code documentation
-
-### 7.3 Explanation Dashboard
-- Develop interactive dashboard for model explainability:
-  - Global feature importance
-  - Stock-specific prediction explanations
-  - Time period analysis
-  - Error distribution visualization
-  - Performance tracking over time
 
 ## 8. Success Criteria
 - Balanced accuracy consistently above 55%
