@@ -1,12 +1,13 @@
 """
 Feature Engineering Module for S&P500 Prediction Project
 
-This module handles the calculation of returns, excess returns,
-and other features needed for the prediction model.
+This module handles the calculation of technical indicators and targets
+for the prediction model.
 """
 
 import pandas as pd
 import numpy as np
+import talib
 import logging
 from typing import Tuple, Dict, List, Optional, Union
 from sklearn.preprocessing import StandardScaler
@@ -18,434 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def calculate_returns(data: pd.DataFrame, price_col: str = 'close') -> pd.DataFrame:
-    """
-    Calculate daily returns for each stock using vectorized operations.
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        S&P500 data with multi-index (ticker, date)
-    price_col : str, optional
-        Column name containing price data (default: 'close')
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame with daily returns
-    """
-    logger.info(f"Calculating daily returns using {price_col} prices...")
-    
-    if data.empty:
-        logger.warning("Empty DataFrame provided. No returns calculated.")
-        return pd.DataFrame()
-    
-    if price_col not in data.columns:
-        logger.error(f"Price column '{price_col}' not found in data.")
-        return pd.DataFrame()
-    
-    # Create returns DataFrame
-    returns = pd.DataFrame(index=data.index)
-    
-    # Calculate returns for all tickers at once using groupby
-    returns['return'] = data.groupby(level='ticker')[price_col].pct_change()
-    
-    logger.info(f"Calculated returns for {len(returns.index.get_level_values('ticker').unique())} tickers")
-    return returns
-
-
-def calculate_market_returns(returns_data: pd.DataFrame) -> pd.Series:
-    """
-    Calculate daily market average returns.
-    
-    Parameters:
-    -----------
-    returns_data : pd.DataFrame
-        DataFrame with stock returns (has 'return' column)
-        
-    Returns:
-    --------
-    pd.Series
-        Series with daily market average returns indexed by date
-    """
-    logger.info("Calculating market average returns...")
-    
-    if returns_data.empty:
-        logger.warning("Empty DataFrame provided. No market returns calculated.")
-        return pd.Series()
-    
-    if 'return' not in returns_data.columns:
-        logger.error("'return' column not found in returns data.")
-        return pd.Series()
-    
-    # Calculate market average return for each date
-    # Group by date and calculate mean of returns
-    market_returns = returns_data.reset_index().groupby('date')['return'].mean()
-    
-    logger.info(f"Calculated market returns for {len(market_returns)} trading days")
-    return market_returns
-
-
-def calculate_excess_returns(returns_data: pd.DataFrame, market_returns: pd.Series) -> pd.DataFrame:
-    """
-    Calculate excess returns relative to market average.
-    
-    Parameters:
-    -----------
-    returns_data : pd.DataFrame
-        DataFrame with stock returns (has 'return' column)
-    market_returns : pd.Series
-        Series with daily market average returns indexed by date
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame with excess returns
-    """
-    logger.info("Calculating excess returns...")
-    
-    if returns_data.empty or market_returns.empty:
-        logger.warning("Empty data provided. No excess returns calculated.")
-        return pd.DataFrame()
-    
-    if 'return' not in returns_data.columns:
-        logger.error("'return' column not found in returns data.")
-        return pd.DataFrame()
-    
-    # Make a copy to avoid modifying original data
-    excess_returns = returns_data.copy()
-    
-    # Create a new column for market returns aligned with stock dates
-    # This ensures we're comparing stock returns with the correct market return for that day
-    excess_returns['market_return'] = excess_returns.index.get_level_values('date').map(market_returns)
-    
-    # Calculate excess return: stock_return - market_return
-    excess_returns['excess_return'] = excess_returns['return'] - excess_returns['market_return']
-    
-    logger.info("Excess returns calculated successfully")
-    return excess_returns
-
-
-def create_lagged_features(
-    data: pd.DataFrame, 
-    feature_col: str, 
-    max_lag: int = 40, 
-    long_term_lags: List[int] = None
-) -> pd.DataFrame:
-    """
-    Create lagged features using vectorized operations.
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        DataFrame with feature data (multi-index: ticker, date)
-    feature_col : str
-        Column name to use for feature creation
-    max_lag : int, optional
-        Maximum number of days for daily lags (default: 40)
-    long_term_lags : List[int], optional
-        List of additional long-term lags to include
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame with lagged features
-    """
-    logger.info(f"Creating lagged features using {feature_col} column...")
-    
-    if data.empty:
-        logger.warning("Empty DataFrame provided. No features created.")
-        return pd.DataFrame()
-    
-    if feature_col not in data.columns:
-        logger.error(f"Feature column '{feature_col}' not found in data.")
-        return pd.DataFrame()
-    
-    # Create features DataFrame with same index as input data
-    features = pd.DataFrame(index=data.index)
-    
-    # Get the feature data
-    feature_data = data[feature_col]
-    
-    # Set long-term lags if not provided
-    if long_term_lags is None:
-        # Create lags from 40 to 240 in steps of 10
-        long_term_lags = list(range(40, 241, 10))
-    
-    # Create all lags in one go using groupby
-    logger.info("Creating daily and long-term lags...")
-    
-    # Combine all lag periods
-    all_lags = list(range(1, max_lag + 1)) + [lag for lag in long_term_lags if lag > max_lag]
-    
-    # Create lags using groupby and shift
-    for lag in all_lags:
-        features[f'lag_{lag}d'] = feature_data.groupby(level='ticker').shift(lag)
-    
-    # Create window-based features
-    logger.info("Creating window-based features...")
-    windows = [5, 10, 20, 60, 120, 240]
-    
-    # Group by ticker for rolling calculations
-    grouped = feature_data.groupby(level='ticker')
-    
-    for window in windows:
-        # Shift by 1 to avoid lookahead bias, then calculate rolling statistics
-        shifted_data = grouped.shift(1)
-        
-        # Calculate window features all at once
-        features[f'cum_{window}d'] = shifted_data.rolling(window=window).sum()
-        features[f'avg_{window}d'] = shifted_data.rolling(window=window).mean()
-        features[f'vol_{window}d'] = shifted_data.rolling(window=window).std()
-    
-    # Record the number of features created
-    num_features = len(features.columns)
-    logger.info(f"Created {num_features} lagged features")
-    
-    return features
-
-
-def create_target_variable(excess_returns: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create binary target variable for next-day excess return direction.
-    Uses vectorized operations for better performance.
-    
-    Parameters:
-    -----------
-    excess_returns : pd.DataFrame
-        DataFrame with excess returns ('excess_return' column)
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame with target variable
-    """
-    logger.info("Creating target variable for next-day excess return direction...")
-    
-    if excess_returns.empty:
-        logger.warning("Empty DataFrame provided. No target variable created.")
-        return pd.DataFrame()
-    
-    if 'excess_return' not in excess_returns.columns:
-        logger.error("'excess_return' column not found in data.")
-        return pd.DataFrame()
-    
-    # Create target variable using groupby for vectorized operations
-    target_df = pd.DataFrame(index=excess_returns.index)
-    
-    # Create next-day direction (1 = positive excess return, 0 = negative excess return)
-    next_day_returns = excess_returns.groupby(level='ticker')['excess_return'].shift(-1)
-    target_df['target'] = (next_day_returns > 0).astype(int)
-    
-    logger.info("Target variable created successfully")
-    return target_df
-
-
-def apply_feature_scaling(features: pd.DataFrame) -> Tuple[pd.DataFrame, StandardScaler]:
-    """
-    Apply feature scaling to normalize features.
-    
-    Parameters:
-    -----------
-    features : pd.DataFrame
-        DataFrame with features to scale
-        
-    Returns:
-    --------
-    Tuple[pd.DataFrame, StandardScaler]
-        - DataFrame with scaled features
-        - The fitted StandardScaler for later use
-    """
-    logger.info("Applying feature scaling...")
-    
-    if features.empty:
-        logger.warning("Empty DataFrame provided. No scaling performed.")
-        return pd.DataFrame(), None
-    
-    # Create scaler
-    scaler = StandardScaler()
-    
-    # Create copy to avoid modifying original data
-    scaled_features = pd.DataFrame(index=features.index)
-    
-    # Process each feature separately
-    for col in features.columns:
-        # Extract the feature values
-        feature_values = features[col].values.reshape(-1, 1)
-        
-        # Fit and transform
-        scaled_values = scaler.fit_transform(feature_values)
-        
-        # Store the scaled values
-        scaled_features[col] = scaled_values.flatten()
-    
-    logger.info(f"Feature scaling applied to {len(features.columns)} features")
-    return scaled_features, scaler
-
-
-def analyze_class_distribution(target: pd.DataFrame) -> Dict:
-    """
-    Analyze the distribution of target classes.
-    
-    Parameters:
-    -----------
-    target : pd.DataFrame
-        DataFrame with target variable ('target' column)
-        
-    Returns:
-    --------
-    Dict
-        Dictionary with class distribution statistics
-    """
-    logger.info("Analyzing target class distribution...")
-    
-    if target.empty:
-        logger.warning("Empty DataFrame provided. No analysis performed.")
-        return {}
-    
-    if 'target' not in target.columns:
-        logger.error("'target' column not found in data.")
-        return {}
-        
-    # Calculate overall class distribution
-    class_counts = target['target'].value_counts()
-    if len(class_counts) == 0:
-        logger.error("No valid target values found after filtering.")
-        return {}
-    class_proportions = target['target'].value_counts(normalize=True)
-    
-    # Check if there's a severe imbalance
-    majority_class = class_proportions.idxmax()
-    majority_proportion = class_proportions.max()
-    is_severely_imbalanced = majority_proportion > 0.7
-    
-    # Calculate class distribution by year
-    yearly_distribution = target.reset_index()
-    yearly_distribution['year'] = yearly_distribution['date'].dt.year
-    yearly_stats = yearly_distribution.groupby('year')['target'].value_counts(normalize=True).unstack()
-    
-    # Calculate class weights for potential use in model training
-    class_weights = {
-        0: (1 / class_counts[0]) * (len(target) / 2),
-        1: (1 / class_counts[1]) * (len(target) / 2)
-    }
-    
-    distribution_stats = {
-        'class_counts': class_counts.to_dict(),
-        'class_proportions': class_proportions.to_dict(),
-        'majority_class': int(majority_class),
-        'majority_proportion': majority_proportion,
-        'is_severely_imbalanced': is_severely_imbalanced,
-        'class_weights': class_weights,
-        'yearly_distribution': yearly_stats.to_dict() if not yearly_stats.empty else {}
-    }
-    
-    logger.info(f"Class distribution: {class_proportions.to_dict()}")
-    if is_severely_imbalanced:
-        logger.warning(f"Severe class imbalance detected: {majority_proportion:.2f} for class {majority_class}")
-    
-    return distribution_stats
-
-
-def prepare_features_targets(
-    data: pd.DataFrame,
-    price_col: str = 'close',
-    max_lag: int = 40,
-    long_term_lags: List[int] = None,
-    apply_scaling: bool = True
-) -> Dict:
-    """
-    Complete feature engineering pipeline to prepare features and targets.
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        S&P500 data with multi-index (ticker, date)
-    price_col : str, optional
-        Column name containing price data (default: 'close')
-    max_lag : int, optional
-        Maximum number of days for daily lags (default: 40)
-    long_term_lags : List[int], optional
-        List of additional long-term lags to include
-    apply_scaling : bool, optional
-        Whether to apply feature scaling (default: True)
-        
-    Returns:
-    --------
-    Dict
-        Dictionary with features, targets, and metadata
-    """
-    logger.info("Starting feature engineering pipeline...")
-    
-    if data.empty:
-        logger.warning("Empty DataFrame provided. No features created.")
-        return {}
-    
-    # Calculate daily returns
-    returns = calculate_returns(data, price_col)
-    
-    # Calculate market returns
-    market_returns = calculate_market_returns(returns)
-    
-    # Calculate excess returns
-    excess_returns = calculate_excess_returns(returns, market_returns)
-    
-    # Create features using excess returns
-    features = create_lagged_features(
-        excess_returns, 
-        'excess_return', 
-        max_lag,
-        long_term_lags
-    )
-    
-    # Create target variable
-    targets = create_target_variable(excess_returns)
-    
-    # Apply feature scaling if requested
-    scaler = None
-    if apply_scaling:
-        scaled_features, scaler = apply_feature_scaling(features)
-        features = scaled_features
-    
-    # Analyze class distribution
-    class_distribution = analyze_class_distribution(targets)
-    
-    # Combine features and targets for final output
-    # Keep only rows where we have both features and target
-    valid_rows = features.index.intersection(targets.index)
-    
-    # Filter for valid rows
-    filtered_features = features.loc[valid_rows]
-    filtered_targets = targets.loc[valid_rows, 'target']
-    
-    # Count features by category
-    feature_counts = {
-        'daily_lags': len([col for col in filtered_features.columns if col.startswith('lag_') and int(col.split('_')[1].replace('d', '')) <= max_lag]),
-        'long_term_lags': len([col for col in filtered_features.columns if col.startswith('lag_') and int(col.split('_')[1].replace('d', '')) > max_lag]),
-        'cumulative': len([col for col in filtered_features.columns if col.startswith('cum_')]),
-        'average': len([col for col in filtered_features.columns if col.startswith('avg_')]),
-        'volatility': len([col for col in filtered_features.columns if col.startswith('vol_')]),
-        'total': len(filtered_features.columns)
-    }
-    
-    result = {
-        'features': filtered_features,
-        'targets': filtered_targets,
-        'excess_returns': excess_returns,
-        'feature_names': list(filtered_features.columns),
-        'feature_counts': feature_counts,
-        'class_distribution': class_distribution,
-        'scaler': scaler,
-        'n_samples': len(filtered_features),
-        'n_features': len(filtered_features.columns),
-        'max_lag_used': max_lag
-    }
-    
-    logger.info(f"Feature engineering completed: {result['n_samples']} samples with {result['n_features']} features")
-    return result
-
-
 class FeatureEngineer:
     """
     Class to handle feature engineering for S&P500 prediction.
@@ -453,7 +26,7 @@ class FeatureEngineer:
     
     def __init__(self, config: Dict = None):
         """
-        Initialize the FeatureEngineer with optional configuration.
+        Initialize the FeatureEngineer with configuration.
         
         Parameters:
         -----------
@@ -461,93 +34,416 @@ class FeatureEngineer:
             Configuration dictionary with options for feature engineering
         """
         self.config = config or {}
-        self.price_col = self.config.get('price_col', 'close')
-        self.max_lag = self.config.get('max_lag', 40)
-        self.long_term_lags = self.config.get('long_term_lags', list(range(40, 241, 10)))
-        self.apply_scaling = self.config.get('apply_scaling', True)
+        self.tech_indicators = self.config.get('features', {}).get('technical_indicators', {})
+        self.target_config = self.config.get('target', {})
         self.scaler = None
+
+    def _get_max_window_size(self) -> int:
+        """Calculate the maximum window size needed for all features and targets."""
+        max_window = 1
         
-    def create_features(self, data: pd.DataFrame) -> Dict:
-        """
-        Create features for the given data.
+        # Check technical indicators
+        if self.tech_indicators.get('momentum', {}).get('enabled'):
+            max_window = max(max_window, max(self.tech_indicators['momentum']['timeperiods']))
         
-        Parameters:
-        -----------
-        data : pd.DataFrame
-            S&P500 data with multi-index (ticker, date)
+        if self.tech_indicators.get('bollinger_bands', {}).get('enabled'):
+            max_window = max(max_window, self.tech_indicators['bollinger_bands']['timeperiod'])
+        
+        if self.tech_indicators.get('rsi', {}).get('enabled'):
+            max_window = max(max_window, self.tech_indicators['rsi']['timeperiod'])
+        
+        if self.tech_indicators.get('macd', {}).get('enabled'):
+            max_window = max(max_window, self.tech_indicators['macd']['slowperiod'])
+        
+        # Check target calculation window
+        target_window = self.target_config['calculation']['rolling_window']
+        max_window = max(max_window, target_window)
+        
+        # Check target horizon
+        max_horizon = max(self.target_config['calculation']['horizon'])
+        max_window = max(max_window, max_horizon)
+        
+        # Add extra day for calculation
+        return max_window + 1
+
+    def _get_valid_data_range(self, ticker_data: pd.Series) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        """Find first and last valid data point for a ticker."""
+        valid_mask = ~ticker_data.isna()
+        if not valid_mask.any():
+            return None, None
+        first_valid = ticker_data[valid_mask].index[0]
+        last_valid = ticker_data[valid_mask].index[-1]
+        return first_valid, last_valid
+
+    def validate_ticker_data(self, ticker_data: pd.DataFrame, min_required_days: int) -> bool:
+        """Check if ticker has enough valid data for feature/target calculation."""
+        price_col = self.config['features']['price_col']
+        valid_data = ~ticker_data[price_col].isna()
+        if not valid_data.any():
+            return False
+        
+        # Count consecutive valid data points
+        consecutive_valid = valid_data.astype(int).groupby(
+            (valid_data.astype(int).diff() != 0).cumsum()
+        ).sum()
+        return (consecutive_valid >= min_required_days).any()
+
+    def _get_valid_calculation_periods(self, ticker_data: pd.DataFrame) -> pd.DatetimeIndex:
+        """Get valid periods for feature and target calculation."""
+        price_col = self.config['features']['price_col']
+        
+        # Get valid data range
+        first_valid, last_valid = self._get_valid_data_range(ticker_data[price_col])
+        if first_valid is None:
+            return pd.DatetimeIndex([])
+        
+        # Calculate required windows
+        feature_window = self._get_max_window_size()
+        target_window = max(self.target_config['calculation']['horizon'])
+        
+        # Calculate valid periods
+        feature_start = first_valid + pd.Timedelta(days=feature_window)
+        target_end = last_valid - pd.Timedelta(days=target_window)
+        
+        if target_end < feature_start:
+            return pd.DatetimeIndex([])
+        
+        # Get valid indices
+        return ticker_data.loc[feature_start:target_end].index
+
+    def _calculate_momentum_indicators(self, price_values: np.ndarray, config: Dict) -> Dict[str, np.ndarray]:
+        """Calculate momentum indicators based on configuration."""
+        features = {}
+        timeperiods = config['timeperiods']
+        types = config.get('types', {'momentum': True, 'roc': True})
+        
+        for period in timeperiods:
+            if types.get('momentum', True):
+                features[f'mom_{period}'] = talib.MOM(price_values, timeperiod=period)
+            if types.get('roc', True):
+                features[f'roc_{period}'] = talib.ROC(price_values, timeperiod=period)
+                
+        return features
+
+    def _calculate_technical_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate all technical indicators at once for the entire dataset."""
+        price_col = self.config['features']['price_col']
+        feature_dfs = []
+        
+        for ticker in data.index.get_level_values('ticker').unique():
+            price_series = data.loc[ticker, price_col]
+            if price_series.isna().all():
+                continue
+                
+            price_values = price_series.values
+            ticker_features = {}
             
-        Returns:
-        --------
-        Dict
-            Dictionary with features, targets, and metadata
-        """
-        result = prepare_features_targets(
-            data,
-            price_col=self.price_col,
-            max_lag=self.max_lag,
-            long_term_lags=self.long_term_lags,
-            apply_scaling=self.apply_scaling
-        )
-        
-        # Store the scaler for later use
-        if 'scaler' in result:
-            self.scaler = result['scaler']
-        
-        return result
-    
-    def transform_features(self, features: pd.DataFrame) -> pd.DataFrame:
-        """
-        Transform features using the stored scaler.
-        
-        Parameters:
-        -----------
-        features : pd.DataFrame
-            DataFrame with features to transform
+            # Calculate RSI
+            if self.tech_indicators.get('rsi', {}).get('enabled'):
+                timeperiod = self.tech_indicators['rsi']['timeperiod']
+                ticker_features[f'rsi_{timeperiod}'] = talib.RSI(price_values, timeperiod=timeperiod)
             
-        Returns:
-        --------
-        pd.DataFrame
-            DataFrame with transformed features
-        """
-        if self.scaler is None:
-            logger.warning("No scaler available. Features will not be transformed.")
+            # Calculate MACD
+            if self.tech_indicators.get('macd', {}).get('enabled'):
+                config = self.tech_indicators['macd']
+                macd, signal, hist = talib.MACD(
+                    price_values,
+                    fastperiod=config['fastperiod'],
+                    slowperiod=config['slowperiod'],
+                    signalperiod=config['signalperiod']
+                )
+                ticker_features['macd'] = macd
+                ticker_features['macd_signal'] = signal
+                ticker_features['macd_hist'] = hist
+            
+            # Calculate Bollinger Bands
+            if self.tech_indicators.get('bollinger_bands', {}).get('enabled'):
+                config = self.tech_indicators['bollinger_bands']
+                upper, middle, lower = talib.BBANDS(
+                    price_values,
+                    timeperiod=config['timeperiod'],
+                    nbdevup=config['nbdevup'],
+                    nbdevdn=config['nbdevdn']
+                )
+                ticker_features['bb_upper'] = upper
+                ticker_features['bb_middle'] = middle
+                ticker_features['bb_lower'] = lower
+                ticker_features['bb_bandwidth'] = (upper - lower) / middle
+                ticker_features['bb_percent_b'] = (price_values - lower) / (upper - lower)
+            
+            # Calculate Momentum indicators
+            if self.tech_indicators.get('momentum', {}).get('enabled'):
+                momentum_features = self._calculate_momentum_indicators(
+                    price_values, 
+                    self.tech_indicators['momentum']
+                )
+                ticker_features.update(momentum_features)
+            
+            # Create DataFrame for this ticker
+            ticker_df = pd.DataFrame(ticker_features, index=price_series.index)
+            ticker_df['ticker'] = ticker
+            feature_dfs.append(ticker_df)
+        
+        if not feature_dfs:
+            return pd.DataFrame()
+            
+        features = pd.concat(feature_dfs, axis=0)
+        features.set_index('ticker', append=True, inplace=True)
+        features = features.reorder_levels(['ticker', 'date'])
+        
+        return features
+
+    def create_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Create technical indicator features."""
+        logger.info("Creating technical indicator features...")
+        
+        # Calculate all technical indicators at once
+        features = self._calculate_technical_indicators(data)
+        
+        if features.empty:
+            logger.warning("No valid features could be calculated!")
             return features
         
-        # Create copy to avoid modifying original data
-        transformed_features = pd.DataFrame(index=features.index)
+        # Apply scaling if configured
+        if self.config['features'].get('apply_scaling', True):
+            features, self.scaler = self._apply_scaling(features)
+        
+        num_tickers = len(features.index.get_level_values('ticker').unique())
+        logger.info(f"Created {len(features.columns)} features for {num_tickers} tickers")
+        
+        # Report data quality metrics
+        num_missing = features.isna().sum().sum()
+        if num_missing > 0:
+            logger.info(f"Features contain {num_missing} missing values")
+            missing_by_column = features.isna().sum()
+            logger.debug("Missing values by feature:\n" + missing_by_column[missing_by_column > 0].to_string())
+            
+        return features
+
+    def _calculate_returns(self, data: pd.DataFrame, horizon: int, return_type: str = 'raw') -> pd.Series:
+        """Calculate returns for a given horizon and type."""
+        price_col = self.config['features']['price_col']
+        returns = pd.Series(index=data.index)
+        
+        for ticker in data.index.get_level_values('ticker').unique():
+            ticker_data = data.loc[ticker][price_col]
+            
+            if return_type == 'raw':
+                returns.loc[ticker] = ticker_data.pct_change(horizon).shift(-horizon)
+            elif return_type == 'excess':
+                # Calculate market average return
+                market_return = data[price_col].groupby('date').mean().pct_change(horizon).shift(-horizon)
+                ticker_return = ticker_data.pct_change(horizon).shift(-horizon)
+                returns.loc[ticker] = ticker_return - market_return
+            elif return_type == 'log':
+                returns.loc[ticker] = (np.log(ticker_data) - np.log(ticker_data.shift(horizon))).shift(-horizon)
+            elif return_type == 'percentage':
+                returns.loc[ticker] = ((ticker_data - ticker_data.shift(horizon)) / ticker_data.shift(horizon) * 100).shift(-horizon)
+                
+        return returns
+
+    def _create_binary_target(self, returns: pd.Series, calc_config: Dict) -> pd.Series:
+        """Create binary target based on configuration method."""
+        method = calc_config['method']
+        target = pd.Series(index=returns.index)
+        
+        if method == 'threshold_based':
+            threshold = calc_config['fixed_threshold']
+            target = (returns > threshold).astype(int)
+            
+        elif method == 'std_based':
+            rolling_mean = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).mean()
+            )
+            rolling_std = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).std()
+            )
+            threshold = rolling_mean + (calc_config['std_threshold'] * rolling_std)
+            target = (returns > threshold).astype(int)
+            
+        elif method == 'zero_based':
+            target = (returns > 0).astype(int)
+            
+        elif method == 'quantile_based':
+            rolling_quantile = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).quantile(0.5)
+            )
+            target = (returns > rolling_quantile).astype(int)
+            
+        return target
+
+    def _create_multiclass_target(self, returns: pd.Series, calc_config: Dict) -> pd.Series:
+        """Create multi-class target based on configuration method."""
+        method = calc_config['method']
+        target = pd.Series(1, index=returns.index)  # Default to neutral class
+        
+        if method == 'std_based':
+            rolling_mean = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).mean()
+            )
+            rolling_std = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).std()
+            )
+            upper = rolling_mean + (calc_config['std_threshold'] * rolling_std)
+            lower = rolling_mean - (calc_config['std_threshold'] * rolling_std)
+            target[returns >= upper] = 2  # up class
+            target[returns <= lower] = 0  # down class
+            
+        elif method == 'quantile_based':
+            quantiles = calc_config.get('quantiles', [0.33, 0.67])
+            rolling_lower = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).quantile(quantiles[0])
+            )
+            rolling_upper = returns.groupby(level='ticker').transform(
+                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).quantile(quantiles[1])
+            )
+            target[returns >= rolling_upper] = 2
+            target[returns <= rolling_lower] = 0
+            
+        elif method == 'fixed_range':
+            threshold = calc_config.get('fixed_threshold', 0.01)
+            target[returns >= threshold] = 2
+            target[returns <= -threshold] = 0
+            
+        return target
+
+    def create_target(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Create target variables based on configuration."""
+        logger.info("Creating target variables...")
+        
+        target_type = self.target_config['type']
+        calc_config = self.target_config['calculation']
+        targets = pd.DataFrame(index=data.index)
+        
+        # For each horizon, calculate returns and create targets
+        for horizon in calc_config['horizon']:
+            # Calculate returns based on configuration
+            returns = self._calculate_returns(
+                data, 
+                horizon=horizon,
+                return_type=calc_config['return_type']
+            )
+            
+            # Create targets based on type
+            if target_type == 'returns':
+                targets[f'target_{horizon}d'] = returns
+                
+            elif target_type == 'binary':
+                targets[f'target_{horizon}d'] = self._create_binary_target(returns, calc_config)
+                
+            elif target_type == 'multiclass':
+                targets[f'target_{horizon}d'] = self._create_multiclass_target(returns, calc_config)
+                
+            else:
+                raise ValueError(f"Unsupported target type: {target_type}")
+        
+        logger.info(f"Created {target_type} targets for horizons: {calc_config['horizon']}")
+        
+        # Log target distribution
+        for col in targets.columns:
+            value_counts = targets[col].value_counts(normalize=True)
+            logger.info(f"Target distribution for {col}:\n{value_counts}")
+            
+        return targets
+
+    def create_feature_target_dataset(self, data: pd.DataFrame) -> Dict:
+        """Create complete feature and target dataset for full period."""
+        logger.info("Creating complete feature and target dataset...")
+        
+        # Calculate minimum required samples
+        min_required = self._get_max_window_size()
+        logger.info(f"Minimum required samples: {min_required}")
+        
+        # For each ticker, determine valid indices
+        valid_indices = []
+        for ticker in data.index.get_level_values('ticker').unique():
+            ticker_data = data.loc[ticker]
+            # Skip if ticker doesn't have enough data
+            if len(ticker_data) <= min_required:
+                logger.warning(f"Insufficient data for ticker {ticker}, skipping...")
+                continue
+            # Get indices after lookback period
+            valid_dates = ticker_data.index[min_required:]
+            valid_indices.extend([(ticker, date) for date in valid_dates])
+        
+        if not valid_indices:
+            logger.warning("No valid data after applying lookback period!")
+            return {
+                'features': pd.DataFrame(),
+                'targets': pd.DataFrame(),
+                'metadata': {
+                    'min_required_samples': min_required,
+                    'error': 'No valid data available'
+                }
+            }
+        
+        # Calculate features and targets
+        features = self.create_features(data)
+        targets = self.create_target(data)
+        
+        # Filter to valid indices only
+        valid_indices = pd.MultiIndex.from_tuples(valid_indices, names=['ticker', 'date'])
+        features = features.loc[valid_indices]
+        targets = targets.loc[valid_indices]
+        
+        # Create metadata
+        metadata = {
+            'min_required_samples': self._get_max_window_size(),
+            'feature_columns': list(features.columns),
+            'target_columns': list(targets.columns),
+            'data_start_date': features.index.get_level_values('date').min(),
+            'data_end_date': features.index.get_level_values('date').max(),
+            'num_samples': len(features),
+            'num_features': len(features.columns),
+            'num_targets': len(targets.columns),
+            'num_tickers': len(features.index.get_level_values('ticker').unique()),
+            'data_quality': {
+                'missing_values': features.isna().sum().to_dict(),
+                'unique_classes': {col: sorted(targets[col].unique().tolist()) 
+                                 for col in targets.columns}
+            }
+        }
+        
+        logger.info(f"Created dataset with {metadata['num_samples']} samples")
+        logger.info(f"Features: {metadata['num_features']}, Targets: {metadata['num_targets']}")
+        logger.info(f"Date range: {metadata['data_start_date']} to {metadata['data_end_date']}")
+        
+        return {
+            'features': features,
+            'targets': targets,
+            'metadata': metadata
+        }
+
+    def _apply_scaling(self, features: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, StandardScaler]]:
+        """Apply feature scaling to normalize features."""
+        logger.info("Applying feature scaling...")
+        
+        if features.empty:
+            logger.warning("Empty DataFrame provided. No scaling performed.")
+            return features, {}
+        
+        # Create scalers dictionary
+        scalers = {}
+        scaled_features = pd.DataFrame(index=features.index)
         
         # Process each feature separately
         for col in features.columns:
-            if col in self.scaler:
-                # Extract the feature values
-                feature_values = features[col].values.reshape(-1, 1)
-                
-                # Transform the values
-                transformed_values = self.scaler[col].transform(feature_values)
-                
-                # Store the transformed values
-                transformed_features[col] = transformed_values.flatten()
-            else:
-                # Keep the original values for features not in the scaler
-                transformed_features[col] = features[col]
-        
-        logger.info(f"Transformed {len(features.columns)} features")
-        return transformed_features
-    
-    def save_scaler(self, output_path: str) -> bool:
-        """
-        Save the feature scaler to file.
-        
-        Parameters:
-        -----------
-        output_path : str
-            Path to save the scaler
+            # Create scaler for this feature
+            scaler = StandardScaler()
             
-        Returns:
-        --------
-        bool
-            True if save succeeded, False otherwise
-        """
+            # Reshape data and fit scaler
+            feature_values = features[col].values.reshape(-1, 1)
+            scaled_values = scaler.fit_transform(feature_values)
+            
+            # Store scaled values and scaler
+            scaled_features[col] = scaled_values.flatten()
+            scalers[col] = scaler
+        
+        logger.info(f"Feature scaling applied to {len(features.columns)} features")
+        return scaled_features, scalers
+
+    def save_scaler(self, output_path: str) -> bool:
+        """Save the feature scaler to file."""
         if self.scaler is None:
             logger.warning("No scaler to save.")
             return False
@@ -565,19 +461,7 @@ class FeatureEngineer:
             return False
     
     def load_scaler(self, input_path: str) -> bool:
-        """
-        Load the feature scaler from file.
-        
-        Parameters:
-        -----------
-        input_path : str
-            Path to the saved scaler
-            
-        Returns:
-        --------
-        bool
-            True if load succeeded, False otherwise
-        """
+        """Load the feature scaler from file."""
         try:
             import pickle
             with open(input_path, 'rb') as f:
