@@ -6,93 +6,70 @@ A machine learning system to predict stock movements using technical indicators 
 
 This project implements a pipeline to predict S&P500 stock movements using technical indicators and various target definitions. The system supports multiple prediction types (returns, binary, multi-class) with configurable calculation methods and horizons.
 
-### Key Features
+## Feature Engineering
 
-- Technical indicators (RSI, MACD, Bollinger Bands)
-- Configurable target variables
-- Memory-efficient data processing
-- Vectorized calculations
-- Comprehensive model evaluation
-- Model explainability
+### Technical Indicators Configuration
 
-## Project Structure
+The system supports multiple technical indicators with flexible period generation, configurable via `config.json`:
 
-```
-sp500_prediction/
-├── data/                  # Data storage
-│   ├── raw/               # Original HDF5 files
-│   └── processed/         # Processed datasets
-├── notebooks/             # Jupyter notebooks
-├── src/                   # Source code
-│   ├── data/              # Data handling
-│   ├── features/          # Feature engineering
-│   ├── models/            # Model implementation
-│   ├── visualization/     # Visualization
-│   └── explanation/       # Model explanation
-├── tests/                 # Test cases
-├── configs/               # Configuration
-├── results/               # Output files
-├── requirements.txt       # Dependencies
-└── README.md             # Documentation
-```
-
-## Configuration Guide
-
-### Pipeline Configuration
-```json
-"pipeline": {
-  "data_file": "data/raw/sp500_data.h5",  // Input data location
-  "output_dir": "results",                 // Output directory
-  "model_type": "random_forest|xgboost|lightgbm|neural_network|logistic_regression",
-  "cv_folds": 5,                          // Number of cross-validation folds
-  "save_model": true,                     // Whether to save trained model
-  "feature_selection": false,             // Enable feature selection
-  "split": {
-    "train_start": "2010-01-01",         // Training period start
-    "test_start": "2018-01-01",          // Test period start
-    "test_end": "2019-12-31"             // Test period end
-  }
-}
-```
-
-### Feature Configuration
 ```json
 "features": {
-  "price_col": "close|open|high|low",     // Price column for calculations
+  "price_col": "close",
   "technical_indicators": {
     "rsi": {
-      "enabled": true|false,              // Enable/disable indicator
-      "timeperiod": 14                    // RSI calculation period
+      "enabled": true,
+      "timeperiod_generation": {
+        "method": "range",
+        "params": {
+          "range": {"start": 9, "end": 30, "step": 7}  // Generates [9, 16, 23]
+        }
+      }
     },
     "macd": {
-      "enabled": true|false,
-      "fastperiod": 12,                   // Fast EMA period
-      "slowperiod": 26,                   // Slow EMA period
-      "signalperiod": 9                   // Signal line period
+      "enabled": true,
+      "period_generation": {
+        "fast": {"start": 8, "end": 15, "step": 4},    // Generates [8, 12]
+        "slow": {"start": 20, "end": 30, "step": 6},   // Generates [20, 26]
+        "signal": {"start": 7, "end": 10, "step": 2}   // Generates [7, 9]
+      }
     },
     "bollinger_bands": {
-      "enabled": true|false,
-      "timeperiod": 20,                   // Moving average period
-      "nbdevup": 2,                       // Upper band deviation
-      "nbdevdn": 2                        // Lower band deviation
+      "enabled": true,
+      "timeperiod_generation": {
+        "method": "range",
+        "params": {
+          "range": {"start": 10, "end": 31, "step": 10}  // Generates [10, 20, 30]
+        }
+      },
+      "nbdevup": 2,
+      "nbdevdn": 2
     },
     "momentum": {
-      "enabled": true|false,
-      "timeperiods": [5, 10, 20, 60],     // List of calculation periods
+      "enabled": true,
+      "timeperiod_generation": {
+        "method": "range",
+        "params": {
+          "short_range": {"start": 1, "end": 21, "step": 1},
+          "long_range": {"start": 40, "end": 241, "step": 20}
+        }
+      },
       "types": {
-        "momentum": true|false,            // Absolute price difference
-        "roc": true|false                  // Rate of Change (percentage)
+        "momentum": true,  // Absolute price difference
+        "roc": true       // Rate of Change (percentage)
       }
     }
   },
-  "apply_scaling": true|false              // Standardize features
+  "apply_scaling": true
 }
 ```
 
 ### Target Configuration
+
+The system supports multiple target types and calculation methods:
+
 ```json
 "target": {
-  "type": "returns|binary|multiclass",     // Type of prediction target
+  "type": "returns|binary|multiclass",  // Target variable type
   "calculation": {
     "method": "std_based|threshold_based|quantile_based|raw",  // Calculation method
     "return_type": "raw|excess|log|percentage",                // Return calculation type
@@ -105,58 +82,24 @@ sp500_prediction/
 }
 ```
 
-### Model Configuration
-```json
-"model": {
-  "random_forest": {
-    "n_estimators": 100,                  // Number of trees
-    "max_depth": 15,                      // Maximum tree depth
-    "min_samples_split": 10,              // Minimum samples for split
-    "min_samples_leaf": 5,                // Minimum samples in leaf
-    "max_features": "sqrt|log2|auto",     // Feature selection method
-    "criterion": "gini|entropy"           // Split criterion
-  },
-  "xgboost": {
-    "n_estimators": 100,                  // Number of boosting rounds
-    "max_depth": 6,                       // Maximum tree depth
-    "learning_rate": 0.1,                 // Learning rate
-    "subsample": 0.8,                     // Sample ratio for trees
-    "colsample_bytree": 0.8              // Column ratio for trees
-  },
-  "lightgbm": {
-    "num_leaves": 31,                     // Number of leaves
-    "learning_rate": 0.1,                 // Learning rate
-    "feature_fraction": 0.8,              // Feature sampling ratio
-    "bagging_fraction": 0.8,              // Row sampling ratio
-    "bagging_freq": 5                     // Bagging frequency
-  },
-  "neural_network": {
-    "hidden_layer_sizes": [100, 50, 25],  // Network architecture
-    "activation": "relu|tanh|sigmoid",     // Activation function
-    "solver": "adam|sgd|lbfgs",           // Optimization algorithm
-    "learning_rate": "constant|adaptive",  // Learning rate schedule
-    "early_stopping": true|false          // Enable early stopping
-  }
-}
-```
+#### Target Types
 
-### Evaluation Configuration
-```json
-"evaluation": {
-  "metrics": {
-    "balanced_accuracy_threshold": 0.55,   // Minimum acceptable accuracy
-    "zero_division": 0,                   // Handling zero division
-    "slope_threshold": 0.01               // Trend detection threshold
-  },
-  "visualization": {
-    "plot_figsize": {
-      "default": [10, 6],                // Default plot size
-      "feature_importance": [12, 8],      // Feature importance plot size
-      "confusion_matrix": [8, 6]          // Confusion matrix plot size
-    }
-  }
-}
-```
+1. Return-Based Targets
+   - Raw returns: Simple price changes
+   - Excess returns: Returns relative to market average
+   - Log returns: Natural logarithm of returns
+   - Percentage returns: Percentage price changes
+
+2. Binary Classification (0/1)
+   - Threshold-based: Fixed value threshold
+   - Standard deviation based: Dynamic threshold
+   - Median-based: Above/below median
+   - Zero-based: Positive/negative returns
+
+3. Multi-class Classification (0/1/2)
+   - Standard deviation based classes
+   - Quantile-based boundaries
+   - Fixed range thresholds
 
 ## Installation
 

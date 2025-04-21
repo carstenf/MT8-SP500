@@ -44,16 +44,23 @@ class FeatureEngineer:
         
         # Check technical indicators
         if self.tech_indicators.get('momentum', {}).get('enabled'):
-            max_window = max(max_window, max(self.tech_indicators['momentum']['timeperiods']))
+            timeperiods = self._generate_timeperiods(self.tech_indicators['momentum'])
+            if timeperiods:
+                max_window = max(max_window, max(timeperiods))
         
         if self.tech_indicators.get('bollinger_bands', {}).get('enabled'):
-            max_window = max(max_window, self.tech_indicators['bollinger_bands']['timeperiod'])
+            periods = self._generate_bollinger_periods(self.tech_indicators['bollinger_bands'])
+            if periods:
+                max_window = max(max_window, max(periods))
         
         if self.tech_indicators.get('rsi', {}).get('enabled'):
-            max_window = max(max_window, self.tech_indicators['rsi']['timeperiod'])
+            periods = self._generate_rsi_periods(self.tech_indicators['rsi'])
+            if periods:
+                max_window = max(max_window, max(periods))
         
         if self.tech_indicators.get('macd', {}).get('enabled'):
-            max_window = max(max_window, self.tech_indicators['macd']['slowperiod'])
+            periods = self._generate_macd_periods(self.tech_indicators['macd'])
+            max_window = max(max_window, max(periods['slow']))
         
         # Check target calculation window
         target_window = self.target_config['calculation']['rolling_window']
@@ -111,12 +118,128 @@ class FeatureEngineer:
         # Get valid indices
         return ticker_data.loc[feature_start:target_end].index
 
+    def _generate_timeperiods(self, config: Dict) -> List[int]:
+        """Generate timeperiods based on configuration."""
+        if 'timeperiod_generation' not in config:
+            return config.get('timeperiods', [5, 10, 20, 60])
+            
+        gen_config = config['timeperiod_generation']
+        if gen_config['method'] != 'range':
+            logger.warning(f"Unsupported timeperiod generation method: {gen_config['method']}")
+            return config.get('timeperiods', [5, 10, 20, 60])
+            
+        params = gen_config['params']
+        timeperiods = []
+        
+        # Generate short-range periods
+        if 'short_range' in params:
+            short_range = params['short_range']
+            timeperiods.extend(range(
+                short_range['start'],
+                short_range['end'],
+                short_range.get('step', 1)
+            ))
+            
+        # Generate long-range periods
+        if 'long_range' in params:
+            long_range = params['long_range']
+            timeperiods.extend(range(
+                long_range['start'],
+                long_range['end'],
+                long_range.get('step', 1)
+            ))
+            
+        if not timeperiods:
+            logger.warning("No timeperiods generated, using defaults")
+            return [5, 10, 20, 60]
+            
+        return sorted(list(set(timeperiods)))  # Remove duplicates and sort
+
+    def _generate_single_range(self, config: Dict) -> List[int]:
+        """Generate timeperiods from a single range configuration."""
+        if 'range' not in config['params']:
+            return []
+            
+        range_config = config['params']['range']
+        return list(range(
+            range_config['start'],
+            range_config['end'],
+            range_config.get('step', 1)
+        ))
+
+    def _generate_rsi_periods(self, config: Dict) -> List[int]:
+        """Generate RSI timeperiods based on configuration."""
+        if 'timeperiod_generation' not in config:
+            return [config.get('timeperiod', 14)]
+            
+        if config['timeperiod_generation']['method'] != 'range':
+            logger.warning(f"Unsupported RSI period generation method")
+            return [config.get('timeperiod', 14)]
+            
+        periods = self._generate_single_range(config['timeperiod_generation'])
+        return periods if periods else [14]
+
+    def _generate_bollinger_periods(self, config: Dict) -> List[int]:
+        """Generate Bollinger Bands timeperiods based on configuration."""
+        if 'timeperiod_generation' not in config:
+            return [config.get('timeperiod', 20)]
+            
+        if config['timeperiod_generation']['method'] != 'range':
+            logger.warning(f"Unsupported Bollinger Bands period generation method")
+            return [config.get('timeperiod', 20)]
+            
+        periods = self._generate_single_range(config['timeperiod_generation'])
+        return periods if periods else [20]
+
+    def _generate_macd_periods(self, config: Dict) -> Dict[str, List[int]]:
+        """Generate MACD periods based on configuration."""
+        if 'period_generation' not in config:
+            return {
+                'fast': [config.get('fastperiod', 12)],
+                'slow': [config.get('slowperiod', 26)],
+                'signal': [config.get('signalperiod', 9)]
+            }
+            
+        gen_config = config['period_generation']
+        periods = {
+            'fast': list(range(
+                gen_config['fast']['start'],
+                gen_config['fast']['end'],
+                gen_config['fast'].get('step', 1)
+            )) if 'fast' in gen_config else [12],
+            
+            'slow': list(range(
+                gen_config['slow']['start'],
+                gen_config['slow']['end'],
+                gen_config['slow'].get('step', 1)
+            )) if 'slow' in gen_config else [26],
+            
+            'signal': list(range(
+                gen_config['signal']['start'],
+                gen_config['signal']['end'],
+                gen_config['signal'].get('step', 1)
+            )) if 'signal' in gen_config else [9]
+        }
+        
+        # Ensure we have at least default values
+        if not periods['fast']: periods['fast'] = [12]
+        if not periods['slow']: periods['slow'] = [26]
+        if not periods['signal']: periods['signal'] = [9]
+        
+        return periods
+
     def _calculate_momentum_indicators(self, price_values: np.ndarray, config: Dict) -> Dict[str, np.ndarray]:
         """Calculate momentum indicators based on configuration."""
         features = {}
-        timeperiods = config['timeperiods']
+        
+        # Generate timeperiods from configuration
+        timeperiods = self._generate_timeperiods(config)
+        logger.info(f"Calculating momentum indicators for periods: {timeperiods}")
+        
+        # Get enabled types
         types = config.get('types', {'momentum': True, 'roc': True})
         
+        # Calculate indicators for each period
         for period in timeperiods:
             if types.get('momentum', True):
                 features[f'mom_{period}'] = talib.MOM(price_values, timeperiod=period)
@@ -140,36 +263,45 @@ class FeatureEngineer:
             
             # Calculate RSI
             if self.tech_indicators.get('rsi', {}).get('enabled'):
-                timeperiod = self.tech_indicators['rsi']['timeperiod']
-                ticker_features[f'rsi_{timeperiod}'] = talib.RSI(price_values, timeperiod=timeperiod)
+                rsi_periods = self._generate_rsi_periods(self.tech_indicators['rsi'])
+                for period in rsi_periods:
+                    ticker_features[f'rsi_{period}'] = talib.RSI(price_values, timeperiod=period)
             
             # Calculate MACD
             if self.tech_indicators.get('macd', {}).get('enabled'):
-                config = self.tech_indicators['macd']
-                macd, signal, hist = talib.MACD(
-                    price_values,
-                    fastperiod=config['fastperiod'],
-                    slowperiod=config['slowperiod'],
-                    signalperiod=config['signalperiod']
-                )
-                ticker_features['macd'] = macd
-                ticker_features['macd_signal'] = signal
-                ticker_features['macd_hist'] = hist
+                macd_periods = self._generate_macd_periods(self.tech_indicators['macd'])
+                for fast in macd_periods['fast']:
+                    for slow in macd_periods['slow']:
+                        for signal in macd_periods['signal']:
+                            if slow <= fast:  # Skip invalid combinations
+                                continue
+                            macd, signal_line, hist = talib.MACD(
+                                price_values,
+                                fastperiod=fast,
+                                slowperiod=slow,
+                                signalperiod=signal
+                            )
+                            period_str = f'_{fast}_{slow}_{signal}'
+                            ticker_features[f'macd{period_str}'] = macd
+                            ticker_features[f'macd_signal{period_str}'] = signal_line
+                            ticker_features[f'macd_hist{period_str}'] = hist
             
             # Calculate Bollinger Bands
             if self.tech_indicators.get('bollinger_bands', {}).get('enabled'):
                 config = self.tech_indicators['bollinger_bands']
-                upper, middle, lower = talib.BBANDS(
-                    price_values,
-                    timeperiod=config['timeperiod'],
-                    nbdevup=config['nbdevup'],
-                    nbdevdn=config['nbdevdn']
-                )
-                ticker_features['bb_upper'] = upper
-                ticker_features['bb_middle'] = middle
-                ticker_features['bb_lower'] = lower
-                ticker_features['bb_bandwidth'] = (upper - lower) / middle
-                ticker_features['bb_percent_b'] = (price_values - lower) / (upper - lower)
+                bb_periods = self._generate_bollinger_periods(config)
+                for period in bb_periods:
+                    upper, middle, lower = talib.BBANDS(
+                        price_values,
+                        timeperiod=period,
+                        nbdevup=config['nbdevup'],
+                        nbdevdn=config['nbdevdn']
+                    )
+                    ticker_features[f'bb_upper_{period}'] = upper
+                    ticker_features[f'bb_middle_{period}'] = middle
+                    ticker_features[f'bb_lower_{period}'] = lower
+                    ticker_features[f'bb_bandwidth_{period}'] = (upper - lower) / middle
+                    ticker_features[f'bb_percent_b_{period}'] = (price_values - lower) / (upper - lower)
             
             # Calculate Momentum indicators
             if self.tech_indicators.get('momentum', {}).get('enabled'):
