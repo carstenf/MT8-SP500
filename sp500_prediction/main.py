@@ -36,7 +36,10 @@ def main(config_file: str = 'configs/config.json'):
     """Main execution function."""
     start_time = datetime.now()
     
-    logger.info("SECTION 1: Loading configuration...")
+    ###############################
+    # 1. Load Configuration
+    ###############################
+    logger.info("Loading configuration...")
     config = load_config(config_file)
     
     pipeline_config = config.get('pipeline', {})
@@ -50,10 +53,14 @@ def main(config_file: str = 'configs/config.json'):
     save_model = pipeline_config.get('save_model', True)
     feature_selection = pipeline_config.get('feature_selection', False)
     
+    # Create necessary directories
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(feature_target_file), exist_ok=True)
     
-    logger.info("SECTION 2: Data Preparation...")
+    ###############################
+    # 2. Data Preparation
+    ###############################
+    logger.info("Preparing data...")
     data_config = config.get('data', {})
     data_handler = DataHandler(data_config)
     
@@ -64,7 +71,10 @@ def main(config_file: str = 'configs/config.json'):
         logger.error("Failed to load data. Exiting.")
         return
     
-    logger.info("SECTION 3: Feature Engineering...")
+    ###############################
+    # 3. Feature Engineering
+    ###############################
+    logger.info("Performing feature engineering...")
     feature_engineer = FeatureEngineer(config)
     
     logger.info("Creating features and targets for entire dataset...")
@@ -76,6 +86,11 @@ def main(config_file: str = 'configs/config.json'):
     
     features = features_targets['features']
     targets = features_targets['targets']
+    
+    ###############################
+    # 4. Data Split
+    ###############################
+    logger.info("Splitting data into train and test sets...")
     
     # Get years from the data
     all_years = pd.DatetimeIndex(features.index.get_level_values('date')).year.unique()
@@ -103,7 +118,9 @@ def main(config_file: str = 'configs/config.json'):
     logger.info(f"Training features shape: {X_train.shape}")
     logger.info(f"Testing features shape: {X_test.shape}")
     
-    # Feature selection if requested
+    ###############################
+    # 5. Feature Selection
+    ###############################
     if feature_selection:
         logger.info("Performing feature selection...")
         feature_selection_result = perform_feature_selection(
@@ -122,7 +139,10 @@ def main(config_file: str = 'configs/config.json'):
     else:
         selected_features = X_train.columns.tolist()
     
-    logger.info("SECTION 4: Model Training...")
+    ###############################
+    # 6. Model Training
+    ###############################
+    logger.info("Training model...")
     model_config = config.get('model', {})
     model_trainer = ModelTrainer(model_config)
     
@@ -156,7 +176,10 @@ def main(config_file: str = 'configs/config.json'):
         model_trainer.save_model(model, model_file)
         logger.info(f"Model saved to {model_file}")
     
-    logger.info("SECTION 5: Model Evaluation...")
+    ###############################
+    # 7. Model Evaluation
+    ###############################
+    logger.info("Evaluating model performance...")
     eval_config = config.get('evaluation', {})
     eval_config['output_dir'] = output_dir
     model_evaluator = ModelEvaluator(eval_config)
@@ -182,6 +205,9 @@ def main(config_file: str = 'configs/config.json'):
     
     logger.info("Model evaluation completed")
     
+    ###############################
+    # 8. Pipeline Summary
+    ###############################
     end_time = datetime.now()
     duration = end_time - start_time
     logger.info(f"Pipeline completed in {duration.total_seconds() / 60:.2f} minutes")
