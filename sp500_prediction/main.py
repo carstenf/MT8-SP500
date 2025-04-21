@@ -11,8 +11,8 @@ import json
 
 from src.data.data_handler import DataHandler
 from src.features.feature_engineer import FeatureEngineer
-from src.models.model_trainer import ModelTrainer
-from src.models.model_evaluator import ModelEvaluator
+from src.models.training import ModelTrainer, perform_feature_selection
+from src.models.evaluation import ModelEvaluator
 from src.explanation.model_explainer import ModelExplainer
 
 logging.basicConfig(
@@ -106,8 +106,6 @@ def main(config_file: str = 'configs/config.json'):
     # Feature selection if requested
     if feature_selection:
         logger.info("Performing feature selection...")
-        from src.models.model_trainer import perform_feature_selection
-        
         feature_selection_result = perform_feature_selection(
             X_train, 
             y_train,
@@ -163,25 +161,26 @@ def main(config_file: str = 'configs/config.json'):
     eval_config['output_dir'] = output_dir
     model_evaluator = ModelEvaluator(eval_config)
     
-    # Make predictions on test data
+    # Create predictions DataFrame
     logger.info("Making predictions on test data...")
-    predictions = model_trainer.predict(model, X_test)
+    y_pred = model_trainer.predict(model=model, X=X_test)
     
-    # Run evaluation
+    predictions = pd.DataFrame({
+        'prediction': y_pred,
+        'true': y_test_single,
+        'probability': model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else None
+    }, index=X_test.index)
+    
+    # Run full evaluation
     logger.info("Running model evaluation...")
-    eval_results = model_evaluator.evaluate_model(
-        model,
-        X_test,
-        y_test_single,
-        predictions
+    eval_results = model_evaluator.run_full_evaluation(
+        model=model,
+        X_test=X_test,
+        y_test=y_test_single,
+        predictions=predictions
     )
     
-    # Save evaluation results
-    results_file = os.path.join(output_dir, 'evaluation_results.json')
-    with open(results_file, 'w') as f:
-        json.dump(eval_results, f, indent=2)
-    
-    logger.info(f"Evaluation results saved to {results_file}")
+    logger.info("Model evaluation completed")
     
     end_time = datetime.now()
     duration = end_time - start_time
