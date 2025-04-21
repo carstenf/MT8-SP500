@@ -544,14 +544,31 @@ class DataHandler:
             min_history_days
         )
     
-    def save_processed_data(self, output_path: str) -> bool:
+    def _calculate_config_hash(self, config: Dict) -> str:
+        """Calculate a hash of the feature and target configurations."""
+        import hashlib
+        import json
+        
+        # Extract only feature and target configurations
+        relevant_config = {
+            'features': config.get('features', {}),
+            'target': config.get('target', {})
+        }
+        
+        # Convert to string and hash
+        config_str = json.dumps(relevant_config, sort_keys=True)
+        return hashlib.md5(config_str.encode()).hexdigest()
+
+    def save_processed_data(self, output_path: str, features_targets: Dict = None) -> bool:
         """
-        Save processed data to file.
+        Save processed data and optionally features/targets to file.
         
         Parameters:
         -----------
         output_path : str
             Path to save the processed data
+        features_targets : Dict, optional
+            Dictionary containing features and targets data to save
             
         Returns:
         --------
@@ -563,7 +580,7 @@ class DataHandler:
             return False
         
         try:
-            # Save the data
+            # Save the raw data
             self.data.to_hdf(output_path, key='processed_data', mode='w')
             
             # Save ticker metadata
@@ -574,6 +591,26 @@ class DataHandler:
             metadata_df = pd.DataFrame([self.metadata])
             metadata_df.to_hdf(output_path, key='metadata', mode='a')
             
+            # Save features and targets if provided
+            if features_targets:
+                if 'features' in features_targets:
+                    features_targets['features'].to_hdf(output_path, key='features', mode='a')
+                if 'targets' in features_targets:
+                    features_targets['targets'].to_hdf(output_path, key='targets', mode='a')
+                    
+                    # Log overall class distribution when saving
+                    for col in features_targets['targets'].columns:
+                        targets = features_targets['targets'][col]
+                        logger.info(f"\nOverall class distribution for {col}:")
+                        logger.info(f"Class 0: {(targets == 0).sum():,} samples ({(targets == 0).mean()*100:.1f}%)")
+                        logger.info(f"Class 1: {(targets == 1).sum():,} samples ({(targets == 1).mean()*100:.1f}%)")
+                
+                # Save metadata with config hash
+                metadata = features_targets.get('metadata', {})
+                metadata['config_hash'] = self._calculate_config_hash(self.config)
+                ft_metadata_df = pd.DataFrame([metadata])
+                ft_metadata_df.to_hdf(output_path, key='features_targets_metadata', mode='a')
+            
             logger.info(f"Successfully saved processed data to {output_path}")
             return True
             
@@ -581,7 +618,7 @@ class DataHandler:
             logger.error(f"Error saving data to {output_path}: {str(e)}")
             return False
     
-    def load_processed_data(self, input_path: str) -> bool:
+    def load_processed_data(self, input_path: str, load_features: bool = False) -> Union[bool, Dict]:
         """
         Load previously processed data from file.
         
@@ -589,12 +626,18 @@ class DataHandler:
         -----------
         input_path : str
             Path to the processed data file
+        load_features : bool, optional
+            Whether to load features and targets data
             
         Returns:
         --------
-        bool
-            True if load succeeded, False otherwise
+        Union[bool, Dict]
+            If load_features is False: True if load succeeded, False otherwise
+            If load_features is True: Dictionary containing loaded features and targets,
+                                    or False if load failed
         """
+        # Calculate current config hash
+        current_hash = self._calculate_config_hash(self.config)
         try:
             # Load the data
             with pd.HDFStore(input_path, mode='r') as store:
@@ -614,8 +657,45 @@ class DataHandler:
                 if '/metadata' in keys:
                     metadata_df = store.get('metadata')
                     self.metadata = metadata_df.iloc[0].to_dict() if not metadata_df.empty else {}
+                
+                # Load features and targets if requested
+                if load_features:
+                    # Check config hash if loading features
+                    if '/features_targets_metadata' in keys:
+                        ft_metadata_df = store.get('features_targets_metadata')
+                        if not ft_metadata_df.empty:
+                            stored_hash = ft_metadata_df.iloc[0].get('config_hash')
+                            if stored_hash != current_hash:
+                                logger.info("Feature configuration has changed. Cached features will be recalculated.")
+                                import os
+                                os.remove(input_path)
+                                return False
+                    
+                    features_targets = {}
+                    
+                    if '/features' in keys:
+                        features_targets['features'] = store.get('features')
+                        logger.info(f"Loaded {len(features_targets['features'])} feature records")
+                    
+                    if '/targets' in keys:
+                        features_targets['targets'] = store.get('targets')
+                        logger.info(f"Loaded {len(features_targets['targets'])} target records")
+                        
+                        # Log overall class distribution
+                        for col in features_targets['targets'].columns:
+                            targets = features_targets['targets'][col]
+                            logger.info(f"\nOverall class distribution for {col}:")
+                            logger.info(f"Class 0: {(targets == 0).sum():,} samples ({(targets == 0).mean()*100:.1f}%)")
+                            logger.info(f"Class 1: {(targets == 1).sum():,} samples ({(targets == 1).mean()*100:.1f}%)")
+                    
+                    if '/features_targets_metadata' in keys:
+                        ft_metadata_df = store.get('features_targets_metadata')
+                        features_targets['metadata'] = ft_metadata_df.iloc[0].to_dict() if not ft_metadata_df.empty else {}
+                        features_targets['metadata']['config_hash'] = current_hash
+                    
+                    return features_targets
             
-            return True
+            return True if not load_features else {}
             
         except Exception as e:
             logger.error(f"Error loading processed data from {input_path}: {str(e)}")

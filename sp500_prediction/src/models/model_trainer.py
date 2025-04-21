@@ -1437,43 +1437,28 @@ class ModelTrainer:
             logger.error(f"Error loading model from {input_path}: {str(e)}")
             return None
     
-    def predict(self, X: pd.DataFrame, model: Any = None, threshold: float = 0.5) -> pd.DataFrame:
+    def predict(self, model: Any, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
         """
         Make predictions with a trained model.
         
         Parameters:
         -----------
+        model : Any
+            Model to use for prediction
         X : pd.DataFrame
             Features to predict on
-        model : Any, optional
-            Model to use for prediction (if None, uses the best model)
         threshold : float, optional
             Probability threshold for positive class prediction
             
         Returns:
         --------
-        pd.DataFrame
-            DataFrame with predictions
+        np.ndarray
+            Array of predictions
         """
-        # Use the best model if none is provided
-        if model is None:
-            if self.best_model is None:
-                logger.error("No model to predict with. Train a model first.")
-                return pd.DataFrame()
-            model = self.best_model
-        
         # Get predictions
-        y_pred = model.predict(X)
         y_prob = model.predict_proba(X)[:, 1]
         
-        # Apply custom threshold if different from default
-        if threshold != 0.5:
-            y_pred = (y_prob >= threshold).astype(int)
+        # Apply threshold
+        y_pred = (y_prob >= threshold).astype(int)
         
-        # Create a DataFrame with predictions
-        predictions = pd.DataFrame({
-            'prediction': y_pred,
-            'probability': y_prob
-        }, index=X.index)
-        
-        return predictions
+        return y_pred

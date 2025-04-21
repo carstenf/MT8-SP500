@@ -20,19 +20,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class FeatureEngineer:
-    """
-    Class to handle feature engineering for S&P500 prediction.
-    """
+    """Class to handle feature engineering for S&P500 prediction."""
     
     def __init__(self, config: Dict = None):
-        """
-        Initialize the FeatureEngineer with configuration.
-        
-        Parameters:
-        -----------
-        config : Dict, optional
-            Configuration dictionary with options for feature engineering
-        """
+        """Initialize the FeatureEngineer with configuration."""
         self.config = config or {}
         self.tech_indicators = self.config.get('features', {}).get('technical_indicators', {})
         self.target_config = self.config.get('target', {})
@@ -234,7 +225,7 @@ class FeatureEngineer:
         
         # Generate timeperiods from configuration
         timeperiods = self._generate_timeperiods(config)
-        logger.info(f"Calculating momentum indicators for periods: {timeperiods}")
+        #logger.info(f"Calculating momentum indicators for periods: {timeperiods}")
         
         # Get enabled types
         types = config.get('types', {'momentum': True, 'roc': True})
@@ -355,22 +346,38 @@ class FeatureEngineer:
     def _calculate_returns(self, data: pd.DataFrame, horizon: int, return_type: str = 'raw') -> pd.Series:
         """Calculate returns for a given horizon and type."""
         price_col = self.config['features']['price_col']
-        returns = pd.Series(index=data.index)
         
-        for ticker in data.index.get_level_values('ticker').unique():
-            ticker_data = data.loc[ticker][price_col]
-            
-            if return_type == 'raw':
-                returns.loc[ticker] = ticker_data.pct_change(horizon).shift(-horizon)
-            elif return_type == 'excess':
-                # Calculate market average return
-                market_return = data[price_col].groupby('date').mean().pct_change(horizon).shift(-horizon)
-                ticker_return = ticker_data.pct_change(horizon).shift(-horizon)
-                returns.loc[ticker] = ticker_return - market_return
-            elif return_type == 'log':
-                returns.loc[ticker] = (np.log(ticker_data) - np.log(ticker_data.shift(horizon))).shift(-horizon)
-            elif return_type == 'percentage':
-                returns.loc[ticker] = ((ticker_data - ticker_data.shift(horizon)) / ticker_data.shift(horizon) * 100).shift(-horizon)
+        # Reset index to access date and ticker columns
+        data_reset = data.reset_index()
+        
+        if return_type == 'raw':
+            # Calculate returns for all tickers at once
+            returns = data_reset.groupby('ticker')[price_col].pct_change(horizon).shift(-horizon)
+        elif return_type == 'excess':
+            # Calculate market average return
+            market_return = data_reset.groupby('date')[price_col].mean().pct_change(horizon).shift(-horizon)
+            ticker_returns = data_reset.groupby('ticker')[price_col].pct_change(horizon).shift(-horizon)
+            returns = pd.Series(index=data_reset.index)
+            for ticker in data_reset['ticker'].unique():
+                ticker_mask = data_reset['ticker'] == ticker
+                returns.loc[ticker_mask] = ticker_returns[ticker_mask] - market_return[data_reset.loc[ticker_mask, 'date']]
+        elif return_type == 'log':
+            returns = (np.log(data_reset[price_col]) - np.log(data_reset[price_col].shift(horizon))).shift(-horizon)
+        elif return_type == 'percentage':
+            returns = ((data_reset[price_col] - data_reset[price_col].shift(horizon)) / data_reset[price_col].shift(horizon) * 100).shift(-horizon)
+        
+        # Restore the index
+        returns.index = data.index
+        
+        # Log return statistics
+        logger.info(f"\nReturn statistics:")
+        logger.info(f"Mean return: {returns.mean():.6f}")
+        logger.info(f"Median return: {returns.median():.6f}")
+        logger.info(f"Min return: {returns.min():.6f}")
+        logger.info(f"Max return: {returns.max():.6f}")
+        logger.info(f"Positive returns: {(returns > 0).sum():,} ({(returns > 0).mean()*100:.1f}%)")
+        logger.info(f"Negative returns: {(returns < 0).sum():,} ({(returns < 0).mean()*100:.1f}%)")
+        logger.info(f"Zero returns: {(returns == 0).sum():,} ({(returns == 0).mean()*100:.1f}%)")
                 
         return returns
 
@@ -381,7 +388,11 @@ class FeatureEngineer:
         
         if method == 'threshold_based':
             threshold = calc_config['fixed_threshold']
-            target = (returns > threshold).astype(int)
+            # For raw returns with threshold 0, include exactly 0 in negative class
+            if calc_config['return_type'] == 'raw' and threshold == 0:
+                target = (returns > 0).astype(int)
+            else:
+                target = (returns > threshold).astype(int)
             
         elif method == 'std_based':
             rolling_mean = returns.groupby(level='ticker').transform(
@@ -397,10 +408,17 @@ class FeatureEngineer:
             target = (returns > 0).astype(int)
             
         elif method == 'quantile_based':
-            rolling_quantile = returns.groupby(level='ticker').transform(
-                lambda x: x.rolling(window=calc_config['rolling_window'], min_periods=1).quantile(0.5)
+            # Calculate quantiles independently for each date
+            returns_reset = returns.reset_index()
+            target = returns_reset.groupby('date')[returns.name].transform(
+                lambda x: (x > x.quantile(0.5)).astype(int)
             )
-            target = (returns > rolling_quantile).astype(int)
+            target.index = returns.index
+            
+            # Log overall class distribution
+            logger.info("Overall target class distribution:")
+            logger.info(f"Class 0: {(target == 0).sum():,} samples ({(target == 0).mean()*100:.1f}%)")
+            logger.info(f"Class 1: {(target == 1).sum():,} samples ({(target == 1).mean()*100:.1f}%)")
             
         return target
 
@@ -475,6 +493,9 @@ class FeatureEngineer:
         for col in targets.columns:
             value_counts = targets[col].value_counts(normalize=True)
             logger.info(f"Target distribution for {col}:\n{value_counts}")
+            logger.info(f"Total samples by class for {col}:")
+            logger.info(f"Class 0: {(targets[col] == 0).sum():,} samples ({(targets[col] == 0).mean()*100:.1f}%)")
+            logger.info(f"Class 1: {(targets[col] == 1).sum():,} samples ({(targets[col] == 1).mean()*100:.1f}%)")
             
         return targets
 
@@ -482,41 +503,9 @@ class FeatureEngineer:
         """Create complete feature and target dataset for full period."""
         logger.info("Creating complete feature and target dataset...")
         
-        # Calculate minimum required samples
-        min_required = self._get_max_window_size()
-        logger.info(f"Minimum required samples: {min_required}")
-        
-        # For each ticker, determine valid indices
-        valid_indices = []
-        for ticker in data.index.get_level_values('ticker').unique():
-            ticker_data = data.loc[ticker]
-            # Skip if ticker doesn't have enough data
-            if len(ticker_data) <= min_required:
-                logger.warning(f"Insufficient data for ticker {ticker}, skipping...")
-                continue
-            # Get indices after lookback period
-            valid_dates = ticker_data.index[min_required:]
-            valid_indices.extend([(ticker, date) for date in valid_dates])
-        
-        if not valid_indices:
-            logger.warning("No valid data after applying lookback period!")
-            return {
-                'features': pd.DataFrame(),
-                'targets': pd.DataFrame(),
-                'metadata': {
-                    'min_required_samples': min_required,
-                    'error': 'No valid data available'
-                }
-            }
-        
-        # Calculate features and targets
+        # Calculate features and targets for all data
         features = self.create_features(data)
         targets = self.create_target(data)
-        
-        # Filter to valid indices only
-        valid_indices = pd.MultiIndex.from_tuples(valid_indices, names=['ticker', 'date'])
-        features = features.loc[valid_indices]
-        targets = targets.loc[valid_indices]
         
         # Create metadata
         metadata = {
@@ -554,9 +543,9 @@ class FeatureEngineer:
             logger.warning("Empty DataFrame provided. No scaling performed.")
             return features, {}
         
-        # Create scalers dictionary
+        # Create scalers dictionary and collect scaled features
         scalers = {}
-        scaled_features = pd.DataFrame(index=features.index)
+        scaled_features_dict = {}
         
         # Process each feature separately
         for col in features.columns:
@@ -568,8 +557,14 @@ class FeatureEngineer:
             scaled_values = scaler.fit_transform(feature_values)
             
             # Store scaled values and scaler
-            scaled_features[col] = scaled_values.flatten()
+            scaled_features_dict[col] = scaled_values.flatten()
             scalers[col] = scaler
+        
+        # Create DataFrame all at once
+        scaled_features = pd.DataFrame(
+            scaled_features_dict,
+            index=features.index
+        )
         
         logger.info(f"Feature scaling applied to {len(features.columns)} features")
         return scaled_features, scalers
