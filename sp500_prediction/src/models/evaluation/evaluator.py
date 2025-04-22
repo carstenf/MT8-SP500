@@ -16,6 +16,7 @@ from .visualization import (
     create_time_series_performance_plot
 )
 from .reporting import generate_performance_report
+from .pycaret_analyzer import PyCaretAnalyzer
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -245,6 +246,63 @@ class ModelEvaluator:
             
         return generate_performance_report(self.results, output_file)
     
+    def analyze_with_pycaret(
+        self,
+        model: Any,
+        X_train: Any,
+        y_train: Any,
+        X_test: Any,
+        y_test: Any
+    ) -> Dict:
+        """
+        Perform advanced model analysis using PyCaret.
+        
+        Parameters:
+        -----------
+        model : Any
+            Trained model instance
+        X_train : Any
+            Training feature matrix
+        y_train : Any
+            Training target values
+        X_test : Any
+            Test feature matrix
+        y_test : Any
+            Test target values
+            
+        Returns:
+        --------
+        Dict
+            Dictionary with PyCaret analysis results
+        """
+        logger.info("Running PyCaret analysis...")
+        
+        try:
+            # Initialize PyCaret analyzer
+            pycaret = PyCaretAnalyzer(self.config)
+            
+            # Setup data
+            if not pycaret.setup_data(X_train, y_train):
+                logger.error("Failed to setup PyCaret analysis")
+                return {}
+            
+            # Run analysis
+            pycaret_results = pycaret.analyze_model(model, X_test, y_test)
+            
+            # Store results
+            self.results['pycaret_analysis'] = pycaret_results
+            
+            # Update visualizations with PyCaret plots
+            if 'visualizations' not in self.results:
+                self.results['visualizations'] = {}
+            self.results['visualizations'].update(pycaret_results.get('plots', {}))
+            
+            return pycaret_results
+            
+        except Exception as e:
+            logger.error(f"Error in PyCaret analysis: {str(e)}")
+            return {}
+
     def run_full_evaluation(
         self,
         model: Any,
@@ -252,7 +310,9 @@ class ModelEvaluator:
         y_test: Any,
         predictions: Any = None,
         excess_returns: Any = None,
-        time_unit: Optional[str] = None
+        time_unit: Optional[str] = None,
+        X_train: Any = None,
+        y_train: Any = None
     ) -> Dict:
         """
         Run complete evaluation pipeline.

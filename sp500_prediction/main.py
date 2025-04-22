@@ -12,7 +12,7 @@ import json
 from src.data.data_handler import DataHandler
 from src.features.feature_engineer import FeatureEngineer
 from src.models.training import ModelTrainer, perform_feature_selection
-from src.models.evaluation import ModelEvaluator
+from src.models.evaluation import YellowbrickEvaluator
 from src.explanation.model_explainer import ModelExplainer
 
 logging.basicConfig(
@@ -48,8 +48,20 @@ def main(config_file: str = 'configs/config.json'):
     feature_target_file = pipeline_config.get('feature_target_file')
     model_type = pipeline_config.get('model_type')
     cv_folds = int(pipeline_config.get('cv_folds', 5))
-    train_start_year = pipeline_config.get('train_start_year')
-    test_years = pipeline_config.get('test_years')
+    
+    # Extract years from split configuration
+    split_config = pipeline_config.get('split', {})
+    train_start = split_config.get('train_start')
+    test_start = split_config.get('test_start')
+    test_end = split_config.get('test_end')
+    
+    # Parse years from date strings
+    train_start_year = int(train_start.split('-')[0]) if train_start else None
+    test_start_year = int(test_start.split('-')[0]) if test_start else None
+    test_end_year = int(test_end.split('-')[0]) if test_end else None
+    
+    # Create list of test years
+    test_years = list(range(test_start_year, test_end_year + 1)) if test_start_year and test_end_year else None
     save_model = pipeline_config.get('save_model', True)
     feature_selection = pipeline_config.get('feature_selection', False)
     
@@ -102,7 +114,7 @@ def main(config_file: str = 'configs/config.json'):
     if test_years is None:
         test_years = all_years[-5:]
     
-    train_years = [y for y in all_years if y not in test_years and y >= train_start_year]
+    train_years = [y for y in all_years if train_start_year <= y < test_start_year]
     logger.info(f"Training years: {train_years}")
     logger.info(f"Testing years: {test_years}")
     
@@ -180,9 +192,10 @@ def main(config_file: str = 'configs/config.json'):
     # 7. Model Evaluation
     ###############################
     logger.info("Evaluating model performance...")
+    # Initialize model evaluator with output directory
     eval_config = config.get('evaluation', {})
     eval_config['output_dir'] = output_dir
-    model_evaluator = ModelEvaluator(eval_config)
+    model_evaluator = YellowbrickEvaluator(eval_config)
     
     # Create predictions DataFrame
     logger.info("Making predictions on test data...")
@@ -194,13 +207,24 @@ def main(config_file: str = 'configs/config.json'):
         'probability': model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else None
     }, index=X_test.index)
     
-    # Run full evaluation
+    # Run evaluation
     logger.info("Running model evaluation...")
-    eval_results = model_evaluator.run_full_evaluation(
+    eval_results = model_evaluator.evaluate_model(
         model=model,
         X_test=X_test,
-        y_test=y_test_single,
-        predictions=predictions
+        y_test=y_test_single
+    )
+
+    # Generate performance report
+    model_evaluator.generate_report()
+    
+    # Create learning curve
+    model_evaluator.create_learning_curve(
+        model=model,
+        X_train=X_train,
+        y_train=y_train_single,
+        cv=3,
+        max_samples=2500
     )
     
     logger.info("Model evaluation completed")
