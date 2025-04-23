@@ -57,6 +57,7 @@ def train_random_forest(
         'max_features': 'sqrt',
         'bootstrap': True,
         'criterion': 'entropy',
+        'n_jobs': -1,  # Enable parallel processing by default
         'random_state': 42
     }
     
@@ -72,6 +73,8 @@ def train_random_forest(
         class_weight=class_weights
     )
     
+    # Log parallelization settings
+    logger.info(f"Training Random Forest with n_jobs={default_params.get('n_jobs')}")
     model.fit(X_train, y_train)
     
     # Record training time
@@ -147,6 +150,7 @@ def train_xgboost(
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'objective': 'binary:logistic',
+        'n_jobs': -1,  # Enable parallel processing
         'random_state': 42
     }
     
@@ -168,6 +172,9 @@ def train_xgboost(
         importance_type='gain',
         **default_params
     )
+    
+    # Log parallelization settings
+    logger.info(f"Training XGBoost with n_jobs={default_params.get('n_jobs')}")
     
     # Fit the model
     if X_val is not None and y_val is not None:
@@ -270,6 +277,7 @@ def train_lightgbm(
         'bagging_freq': 5,
         'objective': 'binary',
         'metric': 'auc',
+        'n_jobs': -1,  # Enable parallel processing
         'random_state': 42
     }
     
@@ -285,6 +293,9 @@ def train_lightgbm(
     start_time = datetime.now()
     
     model = lgb.LGBMClassifier(**default_params)
+    
+    # Log parallelization settings
+    logger.info(f"Training LightGBM with n_jobs={default_params.get('n_jobs')}")
     
     # If validation data is provided, use early stopping
     if X_val is not None and y_val is not None:

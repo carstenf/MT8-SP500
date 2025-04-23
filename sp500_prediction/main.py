@@ -202,28 +202,47 @@ def main(config_file: str = 'configs/config.json'):
     logger.info("Making predictions on test data...")
     y_pred = model_trainer.predict(model=model, X=X_test)
     
+    # Create dummy target for filtering
+    dummy_y = pd.Series(0, index=X_test.index)
+    
+    # Filter test data using the same method
+    X_test_filtered, _, _, _ = model_trainer._filter_ticker_out_with_nan(X_test, dummy_y, X_test, dummy_y)
+    y_test_filtered = y_test_single.loc[X_test_filtered.index]
+    
+    # Create predictions DataFrame with probabilities
+    probabilities = model.predict_proba(X_test_filtered)[:, 1] if hasattr(model, 'predict_proba') else None
+    
     predictions = pd.DataFrame({
         'prediction': y_pred,
         'true': y_test_single,
-        'probability': model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else None
+        'probability': None
     }, index=X_test.index)
     
-    # Run evaluation
+    # Update probabilities for valid samples
+    if probabilities is not None:
+        predictions.loc[X_test_filtered.index, 'probability'] = probabilities
+    
+    # Run evaluation on filtered data
     logger.info("Running model evaluation...")
     eval_results = model_evaluator.evaluate_model(
         model=model,
-        X_test=X_test,
-        y_test=y_test_single
+        X_test=X_test_filtered,
+        y_test=y_test_filtered
     )
 
     # Generate performance report
     model_evaluator.generate_report()
     
-    # Create learning curve
+    # Create learning curve using filtered training data
+    # Filter training data first
+    X_train_filtered, y_train_filtered, _, _ = model_trainer._filter_ticker_out_with_nan(
+        X_train, y_train_single, X_train, y_train_single
+    )
+    
     model_evaluator.create_learning_curve(
         model=model,
-        X_train=X_train,
-        y_train=y_train_single,
+        X_train=X_train_filtered,
+        y_train=y_train_filtered,
         cv=3,
         max_samples=2500
     )

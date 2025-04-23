@@ -46,6 +46,67 @@ class ModelTrainer:
         self.best_model_score = -1
         self.feature_importances = None
     
+    def _filter_ticker_out_with_nan(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series
+    ) -> tuple:
+        """
+        Filter out tickers that don't have complete data in both train and validation sets.
+        Will remove entire tickers that have any NaN values in either period.
+        
+        Parameters:
+        -----------
+        X_train : pd.DataFrame
+            Training features
+        y_train : pd.Series
+            Training target values
+        X_val : pd.DataFrame
+            Validation features
+        y_val : pd.Series
+            Validation target values
+            
+        Returns:
+        --------
+        tuple
+            Filtered (X_train, y_train, X_val, y_val)
+        """
+        # Get list of all tickers from training data
+        all_tickers = X_train.index.get_level_values('ticker').unique()
+        valid_tickers = []
+        
+        # Check each ticker's data completeness
+        for ticker in all_tickers:
+            # Get ticker's data for both periods
+            ticker_train_X = X_train.loc[ticker]
+            ticker_train_y = y_train.loc[ticker]
+            
+            # Check if ticker exists in validation set
+            if ticker in X_val.index:
+                ticker_val_X = X_val.loc[ticker]
+                ticker_val_y = y_val.loc[ticker]
+                
+                # Check if ticker has complete data in both periods
+                if (not ticker_train_X.isna().any().any() and 
+                    not ticker_val_X.isna().any().any() and
+                    not ticker_train_y.isna().any() and 
+                    not ticker_val_y.isna().any()):
+                    valid_tickers.append(ticker)
+        
+        # Filter data to keep only valid tickers (keeping all their dates)
+        X_train_filtered = X_train.loc[X_train.index.get_level_values('ticker').isin(valid_tickers)]
+        y_train_filtered = y_train.loc[y_train.index.get_level_values('ticker').isin(valid_tickers)]
+        X_val_filtered = X_val.loc[X_val.index.get_level_values('ticker').isin(valid_tickers)]
+        y_val_filtered = y_val.loc[y_val.index.get_level_values('ticker').isin(valid_tickers)]
+        
+        logger.info(f"Filtered data to {len(valid_tickers)} tickers with complete data")
+        logger.info(f"Training samples: {len(X_train_filtered)} (from {len(X_train)})")
+        logger.info(f"Validation samples: {len(X_val_filtered)} (from {len(X_val)})")
+        
+        return X_train_filtered, y_train_filtered, X_val_filtered, y_val_filtered
+
     def train_model(
         self, 
         X_train: pd.DataFrame, 
@@ -98,6 +159,18 @@ class ModelTrainer:
         # Get the appropriate training function
         train_func = model_trainers[model_type]
         
+        # Filter data to include only samples with complete features
+        if X_val is not None and y_val is not None:
+            X_train, y_train, X_val, y_val = self._filter_ticker_out_with_nan(X_train, y_train, X_val, y_val)
+        else:
+            # If no validation set, use the same data for both train and validation to filter
+            X_train, y_train, _, _ = self._filter_ticker_out_with_nan(X_train, y_train, X_train, y_train)
+        
+        # Skip training if no valid data remains
+        if len(X_train) == 0:
+            logger.error("No valid samples remaining after filtering incomplete data")
+            return {}
+            
         # Train the model
         if model_type == 'logistic_regression':
             model_result = train_func(X_train, y_train, class_weights=class_weights)
@@ -301,12 +374,52 @@ class ModelTrainer:
         Dict
             Dictionary with cross-validation results
         """
-        return perform_cross_validation(
-            data_folds,
-            model_type,
-            class_weights,
-            model_params
-        )
+        results = []
+        
+        for fold in data_folds:
+            logger.info(f"\nProcessing fold {fold.get('fold_num', '?')}...")
+            
+            # Get fold data
+            X_train = fold['train_data']
+            y_train = fold['train_targets']
+            X_val = fold['test_data']
+            y_val = fold['test_targets']
+            
+            # Filter to include only complete data
+            X_train, y_train, X_val, y_val = self._filter_ticker_out_with_nan(X_train, y_train, X_val, y_val)
+            
+            if len(X_train) == 0 or len(X_val) == 0:
+                logger.warning(f"Skipping fold {fold.get('fold_num', '?')} - insufficient data after filtering")
+                continue
+            
+            # Train and evaluate model on this fold
+            fold_result = self.train_model(
+                X_train, y_train,
+                X_val=X_val,
+                y_val=y_val,
+                model_type=model_type,
+                class_weights=class_weights,
+                params=model_params
+            )
+            
+            if fold_result:
+                results.append(fold_result)
+        
+        if not results:
+            logger.error("No valid results from cross-validation")
+            return {}
+            
+        # Compute average scores across folds
+        avg_scores = {}
+        for metric in results[0]['val_scores'].keys():
+            scores = [r['val_scores'][metric] for r in results]
+            avg_scores[metric] = sum(scores) / len(scores)
+        
+        return {
+            'fold_results': results,
+            'avg_scores': avg_scores,
+            'num_folds': len(results)
+        }
     
     def save_model(self, model: Any, output_path: str) -> bool:
         """
@@ -372,7 +485,7 @@ class ModelTrainer:
         threshold: float = 0.5
     ) -> pd.Series:
         """
-        Make predictions with a trained model.
+        Make predictions with a trained model. Will filter out samples with NaN values.
         
         Parameters:
         -----------
@@ -386,12 +499,29 @@ class ModelTrainer:
         Returns:
         --------
         pd.Series
-            Series of predictions
+            Series of predictions (NaN for samples that were filtered out)
         """
-        # Get predictions
-        y_prob = model.predict_proba(X)[:, 1]
+        # Create a Series to store predictions, initialized with NaN
+        all_predictions = pd.Series(index=X.index, dtype=float)
         
-        # Apply threshold
-        y_pred = (y_prob >= threshold).astype(int)
+        # Create dummy target variable for filtering
+        dummy_y = pd.Series(0, index=X.index)
         
-        return pd.Series(y_pred, index=X.index)
+        # Use existing filter method to get complete data
+        X_valid, _, _, _ = self._filter_ticker_out_with_nan(X, dummy_y, X, dummy_y)
+        
+        if len(X_valid) > 0:
+            # Make predictions on valid data
+            y_prob = model.predict_proba(X_valid)[:, 1]
+            valid_predictions = (y_prob >= threshold).astype(int)
+            
+            # Update predictions for valid samples
+            all_predictions.loc[X_valid.index] = valid_predictions
+            
+            n_tickers = len(X_valid.index.get_level_values('ticker').unique())
+            logger.info(f"Made predictions for {n_tickers} tickers "
+                       f"({len(X_valid)} samples, filtered from {len(X)} samples)")
+        else:
+            logger.warning("No valid samples for prediction after filtering NaN values")
+        
+        return all_predictions

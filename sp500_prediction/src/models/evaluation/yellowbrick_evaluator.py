@@ -465,28 +465,25 @@ class YellowbrickEvaluator:
                 y_train = y_train.iloc[sample_indices]
                 logger.info(f"Using {max_samples} randomly sampled training examples")
             
-            # Configure train sizes to use 5 points
-            train_sizes = np.linspace(0.2, 1.0, 5)
+            # Convert data to numpy arrays
+            X = X_train.values
+            y = y_train.values
             
-            # Create progress bar wrapper for the fit process
-            with tqdm(total=100, desc="Creating learning curve") as pbar:
-                # Custom scorer that updates the progress bar
-                def progress_scoring(estimator, X, y):
-                    pbar.update(100 // (cv * len(train_sizes)))  # Update based on total steps
-                    return model.score(X, y)
-
-                viz = LearningCurve(
-                    model,
-                    cv=cv,
-                    train_sizes=train_sizes,
-                    scoring=progress_scoring,
-                    n_jobs=1,  # Set to 1 to make progress bar work correctly
-                    groups=None
-                )
-                viz.fit(X_train, y_train)
-            plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.15)
+            # Basic learning curve without progress tracking
+            plt.figure(figsize=(10, 6))
+            viz = LearningCurve(
+                model,
+                cv=cv,
+                train_sizes=[0.2, 0.4, 0.6, 0.8, 1.0],
+                scoring='accuracy',
+                n_jobs=None  # Use no parallelization
+            )
+            viz.fit(X, y)
+            
+            # Save the plot
             plot_path = os.path.join(self.plots_dir, 'learning_curve.png')
-            viz.show(outpath=plot_path, bbox_inches='tight', dpi=150)
+            viz.show(outpath=plot_path)
+            plt.close()
             
             if 'plots' not in self.results:
                 self.results['plots'] = {}
