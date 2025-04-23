@@ -195,6 +195,7 @@ def main(config_file: str = 'configs/config.json'):
     # Initialize model evaluator with output directory
     eval_config = config.get('evaluation', {})
     eval_config['output_dir'] = output_dir
+    eval_config['model_type'] = model_type
     model_evaluator = YellowbrickEvaluator(eval_config)
     
     # Create predictions DataFrame
