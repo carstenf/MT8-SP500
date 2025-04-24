@@ -10,7 +10,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-from src.models.evaluation.yellowbrick_evaluator import YellowbrickEvaluator
+from src.evaluation import YellowbrickEvaluator
 
 class TestYellowbrickEvaluator(unittest.TestCase):
     """Test cases for YellowbrickEvaluator."""

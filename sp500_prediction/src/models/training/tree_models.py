@@ -68,6 +68,7 @@ def train_random_forest(
     # Create and train the model
     start_time = datetime.now()
     
+    # Use standard RandomForestClassifier
     model = RandomForestClassifier(
         **default_params,
         class_weight=class_weights
@@ -75,6 +76,8 @@ def train_random_forest(
     
     # Log parallelization settings
     logger.info(f"Training Random Forest with n_jobs={default_params.get('n_jobs')}")
+    
+    # Fit model - scikit-learn will automatically handle feature names from DataFrame
     model.fit(X_train, y_train)
     
     # Record training time

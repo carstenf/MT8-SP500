@@ -13,7 +13,7 @@ import pandas as pd
 from .baseline_models import train_baseline_model, train_neural_network
 from .tree_models import train_random_forest, train_xgboost, train_lightgbm
 from .feature_selection import perform_feature_selection
-from .evaluation import evaluate_model, perform_cross_validation
+from .data_filtering import filter_ticker_out_with_nan
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -46,67 +46,6 @@ class ModelTrainer:
         self.best_model_score = -1
         self.feature_importances = None
     
-    def _filter_ticker_out_with_nan(
-        self,
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-        X_val: pd.DataFrame,
-        y_val: pd.Series
-    ) -> tuple:
-        """
-        Filter out tickers that don't have complete data in both train and validation sets.
-        Will remove entire tickers that have any NaN values in either period.
-        
-        Parameters:
-        -----------
-        X_train : pd.DataFrame
-            Training features
-        y_train : pd.Series
-            Training target values
-        X_val : pd.DataFrame
-            Validation features
-        y_val : pd.Series
-            Validation target values
-            
-        Returns:
-        --------
-        tuple
-            Filtered (X_train, y_train, X_val, y_val)
-        """
-        # Get list of all tickers from training data
-        all_tickers = X_train.index.get_level_values('ticker').unique()
-        valid_tickers = []
-        
-        # Check each ticker's data completeness
-        for ticker in all_tickers:
-            # Get ticker's data for both periods
-            ticker_train_X = X_train.loc[ticker]
-            ticker_train_y = y_train.loc[ticker]
-            
-            # Check if ticker exists in validation set
-            if ticker in X_val.index:
-                ticker_val_X = X_val.loc[ticker]
-                ticker_val_y = y_val.loc[ticker]
-                
-                # Check if ticker has complete data in both periods
-                if (not ticker_train_X.isna().any().any() and 
-                    not ticker_val_X.isna().any().any() and
-                    not ticker_train_y.isna().any() and 
-                    not ticker_val_y.isna().any()):
-                    valid_tickers.append(ticker)
-        
-        # Filter data to keep only valid tickers (keeping all their dates)
-        X_train_filtered = X_train.loc[X_train.index.get_level_values('ticker').isin(valid_tickers)]
-        y_train_filtered = y_train.loc[y_train.index.get_level_values('ticker').isin(valid_tickers)]
-        X_val_filtered = X_val.loc[X_val.index.get_level_values('ticker').isin(valid_tickers)]
-        y_val_filtered = y_val.loc[y_val.index.get_level_values('ticker').isin(valid_tickers)]
-        
-        logger.info(f"Filtered data to {len(valid_tickers)} tickers with complete data")
-        logger.info(f"Training samples: {len(X_train_filtered)} (from {len(X_train)})")
-        logger.info(f"Validation samples: {len(X_val_filtered)} (from {len(X_val)})")
-        
-        return X_train_filtered, y_train_filtered, X_val_filtered, y_val_filtered
-
     def train_model(
         self, 
         X_train: pd.DataFrame, 
@@ -164,7 +103,7 @@ class ModelTrainer:
             X_train, y_train, X_val, y_val = self._filter_ticker_out_with_nan(X_train, y_train, X_val, y_val)
         else:
             # If no validation set, use the same data for both train and validation to filter
-            X_train, y_train, _, _ = self._filter_ticker_out_with_nan(X_train, y_train, X_train, y_train)
+            X_train, y_train, _, _ = filter_ticker_out_with_nan(X_train, y_train, X_train, y_train)
         
         # Skip training if no valid data remains
         if len(X_train) == 0:
@@ -313,113 +252,6 @@ class ModelTrainer:
             params=params
         )
     
-    def evaluate_model(
-        self,
-        X_test: pd.DataFrame,
-        y_test: pd.Series,
-        model: Any = None,
-        threshold: float = 0.5
-    ) -> Dict:
-        """
-        Evaluate a model on test data.
-        
-        Parameters:
-        -----------
-        X_test : pd.DataFrame
-            Test features
-        y_test : pd.Series
-            Test target values
-        model : Any, optional
-            Model to evaluate (if None, uses the best model)
-        threshold : float, optional
-            Probability threshold for positive class prediction
-            
-        Returns:
-        --------
-        Dict
-            Dictionary with evaluation results
-        """
-        # Use the best model if none is provided
-        if model is None:
-            if self.best_model is None:
-                logger.error("No model to evaluate. Train a model first.")
-                return {}
-            model = self.best_model
-        
-        return evaluate_model(model, X_test, y_test, threshold)
-    
-    def perform_cross_validation(
-        self,
-        data_folds: List[Dict],
-        model_type: str = 'xgboost',
-        class_weights: Dict = None,
-        model_params: Dict = None
-    ) -> Dict:
-        """
-        Perform time-based cross-validation.
-        
-        Parameters:
-        -----------
-        data_folds : List[Dict]
-            List of dictionaries containing train and test data for each fold
-        model_type : str, optional
-            Type of model to train
-        class_weights : Dict, optional
-            Class weights for handling imbalanced classes
-        model_params : Dict, optional
-            Model hyperparameters
-            
-        Returns:
-        --------
-        Dict
-            Dictionary with cross-validation results
-        """
-        results = []
-        
-        for fold in data_folds:
-            logger.info(f"\nProcessing fold {fold.get('fold_num', '?')}...")
-            
-            # Get fold data
-            X_train = fold['train_data']
-            y_train = fold['train_targets']
-            X_val = fold['test_data']
-            y_val = fold['test_targets']
-            
-            # Filter to include only complete data
-            X_train, y_train, X_val, y_val = self._filter_ticker_out_with_nan(X_train, y_train, X_val, y_val)
-            
-            if len(X_train) == 0 or len(X_val) == 0:
-                logger.warning(f"Skipping fold {fold.get('fold_num', '?')} - insufficient data after filtering")
-                continue
-            
-            # Train and evaluate model on this fold
-            fold_result = self.train_model(
-                X_train, y_train,
-                X_val=X_val,
-                y_val=y_val,
-                model_type=model_type,
-                class_weights=class_weights,
-                params=model_params
-            )
-            
-            if fold_result:
-                results.append(fold_result)
-        
-        if not results:
-            logger.error("No valid results from cross-validation")
-            return {}
-            
-        # Compute average scores across folds
-        avg_scores = {}
-        for metric in results[0]['val_scores'].keys():
-            scores = [r['val_scores'][metric] for r in results]
-            avg_scores[metric] = sum(scores) / len(scores)
-        
-        return {
-            'fold_results': results,
-            'avg_scores': avg_scores,
-            'num_folds': len(results)
-        }
     
     def save_model(self, model: Any, output_path: str) -> bool:
         """
@@ -508,12 +340,23 @@ class ModelTrainer:
         dummy_y = pd.Series(0, index=X.index)
         
         # Use existing filter method to get complete data
-        X_valid, _, _, _ = self._filter_ticker_out_with_nan(X, dummy_y, X, dummy_y)
+        # Note: This preserves DataFrame structure and feature names
+        X_valid, _, _, _ = filter_ticker_out_with_nan(X, dummy_y, X, dummy_y)
         
         if len(X_valid) > 0:
-            # Make predictions on valid data
-            y_prob = model.predict_proba(X_valid)[:, 1]
-            valid_predictions = (y_prob >= threshold).astype(int)
+            # Make predictions on valid data using DataFrame directly
+            # scikit-learn will handle feature name matching automatically
+            if hasattr(model, 'predict_proba'):
+                # Get probabilities as numpy array first
+                probas = model.predict_proba(X_valid)
+                # Convert the second column (positive class probabilities) to Series
+                y_prob = pd.Series(probas[:, 1], index=X_valid.index)
+                valid_predictions = (y_prob >= threshold).astype(int)
+            else:
+                valid_predictions = pd.Series(
+                    model.predict(X_valid),
+                    index=X_valid.index
+                )
             
             # Update predictions for valid samples
             all_predictions.loc[X_valid.index] = valid_predictions

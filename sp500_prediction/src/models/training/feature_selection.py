@@ -15,6 +15,7 @@ import lightgbm as lgb
 from sklearn.feature_selection import RFECV
 
 from .tree_models import train_random_forest, train_xgboost, train_lightgbm
+from .data_filtering import filter_ticker_out_with_nan
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -50,11 +51,21 @@ def perform_model_based_selection(
     logger.info(f"Performing model-based feature selection using {model_type}...")
     
     # Train model to get feature importances
+    logger.info(f"Training {model_type} model for feature selection...")
+    
+    # Ensure y_train is 1d array
+    if isinstance(y_train, pd.DataFrame):
+        # Take first target column if multiple targets
+        y_train = y_train.iloc[:, 0]
+    
     if model_type == 'random_forest':
+        logger.info("Using RandomForest for feature importance calculation")
         model_result = train_random_forest(X_train, y_train, params=params)
     elif model_type == 'xgboost':
+        logger.info("Using XGBoost for feature importance calculation")
         model_result = train_xgboost(X_train, y_train, params=params)
     elif model_type == 'lightgbm':
+        logger.info("Using LightGBM for feature importance calculation")
         model_result = train_lightgbm(X_train, y_train, params=params)
     else:
         logger.error(f"Unsupported model type: {model_type}")
@@ -81,8 +92,8 @@ def perform_model_based_selection(
     # Select top N features
     top_features = importance_df.head(n_top_features)['feature'].tolist()
     
-    # Create reduced feature set
-    X_reduced = X_train[top_features]
+    # Create reduced feature set from filtered data
+    X_reduced = X_train[top_features]  # Already using filtered X_train
     
     return {
         'method': 'model_based',
@@ -155,8 +166,8 @@ def perform_recursive_selection(
     # Get selected features
     selected_features = X_train.columns[selector.support_].tolist()
     
-    # Create reduced feature set
-    X_reduced = X_train[selected_features]
+    # Create reduced feature set from filtered data
+    X_reduced = X_train[selected_features]  # Already using filtered X_train
     
     # Create importance ranking based on elimination order
     ranking = selector.ranking_
@@ -175,6 +186,9 @@ def perform_recursive_selection(
         'grid_scores': selector.grid_scores_.tolist(),
         'n_features_selected': len(selected_features)
     }
+
+# The FeaturePreservingRandomForest class has been removed.
+# We now track feature names explicitly and use standard RandomForestClassifier.
 
 def perform_boruta_selection(
     X_train: pd.DataFrame,
@@ -213,6 +227,9 @@ def perform_boruta_selection(
     if params:
         base_model.set_params(**params)
     
+    # Store feature names before Boruta
+    feature_names = X_train.columns.tolist()
+    
     # Create Boruta selector
     selector = BorutaPy(
         estimator=base_model,
@@ -222,7 +239,12 @@ def perform_boruta_selection(
     )
     
     # Fit the selector
-    selector.fit(X_train.values, y_train.values)
+    # We'll provide DataFrame to our wrapper, which will handle the conversion
+    selector.fit(X_train, y_train.values)
+    
+    # Set feature names on the underlying model (if it doesn't already have them)
+    if hasattr(selector.estimator, 'estimator_') and not hasattr(selector.estimator.estimator_, 'feature_names_in_'):
+        selector.estimator.estimator_.feature_names_in_ = np.array(feature_names)
     
     # Get confirmed features
     confirmed_features = X_train.columns[selector.support_].tolist()
@@ -230,8 +252,8 @@ def perform_boruta_selection(
     # Get tentative features
     tentative_features = X_train.columns[selector.support_weak_].tolist()
     
-    # Create reduced feature set with confirmed features
-    X_reduced = X_train[confirmed_features]
+    # Create reduced feature set from filtered data with confirmed features
+    X_reduced = X_train[confirmed_features]  # Already using filtered X_train
     
     # Create ranking based on feature importances
     importance_df = pd.DataFrame({
@@ -261,7 +283,12 @@ def perform_feature_selection(
     params: Dict = None
 ) -> Dict:
     """
-    Perform feature selection using the specified method.
+    Perform feature selection after filtering out tickers with NaN values.
+    
+    This function:
+    1. Filters out any tickers that have NaN values
+    2. Performs feature selection on the clean data
+    3. Returns selected features and the reduced dataset (using filtered data)
     
     Parameters:
     -----------
@@ -281,8 +308,27 @@ def perform_feature_selection(
     Returns:
     --------
     Dict
-        Dictionary with feature selection results
+        Dictionary containing:
+        - method: Feature selection method used
+        - importance_df: DataFrame with feature importance scores
+        - top_features/selected_features: List of selected feature names
+        - X_reduced: DataFrame with only selected features (using filtered data)
     """
+    # Filter out tickers with NaN values
+    logger.info("Filtering out tickers with NaN values before feature selection...")
+    X_train_filtered, y_train_filtered, _, _ = filter_ticker_out_with_nan(
+        X_train, y_train, X_train, y_train
+    )
+    
+    # Check if we have any data left after filtering
+    if len(X_train_filtered) == 0:
+        logger.error("No data remaining after filtering out NaN values")
+        return {}
+    
+    # Log data shape for debugging
+    logger.info(f"Filtered data shape - X: {X_train_filtered.shape}, y: {len(y_train_filtered)}")
+    logger.info(f"Features: {', '.join(X_train_filtered.columns)}")
+    
     logger.info(f"Performing feature selection using {method} method...")
     
     # Available feature selection methods
@@ -296,10 +342,20 @@ def perform_feature_selection(
         logger.error(f"Unsupported feature selection method: {method}")
         return {}
     
-    # Call appropriate selection function
+    # Call appropriate selection function with filtered data
     if method == 'model_based':
-        return methods[method](X_train, y_train, model_type, n_top_features, params)
+        result = methods[method](X_train_filtered, y_train_filtered, model_type, n_top_features, params)
     elif method == 'recursive':
-        return methods[method](X_train, y_train, model_type, params=params)
+        result = methods[method](X_train_filtered, y_train_filtered, model_type, params=params)
     else:  # boruta
-        return methods[method](X_train, y_train, params)
+        result = methods[method](X_train_filtered, y_train_filtered, params)
+    
+    # Create reduced feature set from filtered data using selected features
+    if result and 'top_features' in result:
+        selected_features = result['top_features']
+        result['X_reduced'] = X_train_filtered[selected_features]
+    elif result and 'selected_features' in result:
+        selected_features = result['selected_features']
+        result['X_reduced'] = X_train_filtered[selected_features]
+    
+    return result

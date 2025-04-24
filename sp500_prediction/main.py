@@ -8,11 +8,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import json
-
 from src.data.data_handler import DataHandler
 from src.features.feature_engineer import FeatureEngineer
-from src.models.training import ModelTrainer, perform_feature_selection
-from src.models.evaluation import YellowbrickEvaluator
+from src.features.target_engineer import TargetEngineer
+from src.models.training import (
+    ModelTrainer, 
+    perform_feature_selection
+)
+from src.models.training.data_filtering import filter_ticker_out_with_nan
+from src.evaluation import YellowbrickEvaluator
 from src.explanation.model_explainer import ModelExplainer
 
 logging.basicConfig(
@@ -78,6 +82,11 @@ def main(config_file: str = 'configs/config.json'):
     
     logger.info(f"Loading raw data from {data_file}...")
     success = data_handler.load_data(data_file)
+
+    #if success:
+    #    unique_dates = data_handler.data.index.get_level_values('date').unique()
+    #    print("\nFirst 10 dates:")
+    #    print(unique_dates[:10])
     
     if not success:
         logger.error("Failed to load data. Exiting.")
@@ -87,18 +96,52 @@ def main(config_file: str = 'configs/config.json'):
     # 3. Feature Engineering
     ###############################
     logger.info("Performing feature engineering...")
+    # Create features
     feature_engineer = FeatureEngineer(config)
-    
-    logger.info("Creating features and targets for entire dataset...")
-    features_targets = feature_engineer.create_feature_target_dataset(data_handler.data)
-    
-    if 'features' not in features_targets or features_targets['features'].empty:
+    features = feature_engineer.create_features(data_handler.data)
+    if features.empty:
         logger.error("Failed to create features")
         return
+
+    # Create targets
+    target_engineer = TargetEngineer(config)
+    targets = target_engineer.create_targets(data_handler.data)
+    if targets.empty:
+        logger.error("Failed to create targets")
+        return
     
-    features = features_targets['features']
-    targets = features_targets['targets']
+    # Create metadata
+    metadata = {
+        'feature_columns': list(features.columns),
+        'target_columns': list(targets.columns),
+        'data_start_date': features.index.get_level_values('date').min(),
+        'data_end_date': features.index.get_level_values('date').max(),
+        'num_samples': len(features),
+        'num_features': len(features.columns),
+        'num_targets': len(targets.columns),
+        'num_tickers': len(features.index.get_level_values('ticker').unique()),
+        'data_quality': {
+            'missing_values': features.isna().sum().to_dict(),
+            'unique_classes': {col: sorted(targets[col].unique().tolist()) for col in targets.columns}
+        }
+    }
+
+    # Log dataset information from metadata
+    if metadata:
+        logger.info(f"Dataset creation complete:")
+        logger.info(f"Features shape: {metadata['num_features']} features, {metadata['num_samples']} samples")
+        logger.info(f"Date range: {metadata['data_start_date']} to {metadata['data_end_date']}")
+        logger.info(f"Number of tickers: {metadata['num_tickers']}")
     
+    # Get AAPL data
+    #aapl_data = features.loc['AAPL']
+    #print("\nFirst 10 days of AAPL:")
+    #print(aapl_data.head(10).to_string())
+    #print("\n" + "="*80 + "\n")  # Separator
+    #print("Last 10 days of AAPL:")
+    #print(aapl_data.tail(10).to_string())
+    #print(f"\nTotal trading days for AAPL: {len(aapl_data)}")
+        
     ###############################
     # 4. Data Split
     ###############################
@@ -133,18 +176,36 @@ def main(config_file: str = 'configs/config.json'):
     ###############################
     # 5. Feature Selection
     ###############################
+    
+    # Select target horizon for training (use first horizon by default)
+    target_horizon = config.get('target', {}).get('calculation', {}).get('horizon', [1])[0]
+    target_col = f'target_{target_horizon}d'
+    
+    if target_col not in targets.columns:
+        logger.error(f"Target column {target_col} not found in targets")
+        return
+    
+    logger.info(f"Training model for target horizon: {target_horizon} days")
+    
     if feature_selection:
-        logger.info("Performing feature selection...")
+        logger.info(f"Performing feature selection for {target_col}...")
         feature_selection_result = perform_feature_selection(
-            X_train, 
-            y_train,
+            X_train,
+            y_train[target_col],
             method='model_based',
             model_type='random_forest',
             n_top_features=40
         )
         
+        # Get selected features based on method used
+        if 'top_features' in feature_selection_result:
+            selected_features = feature_selection_result['top_features']  # model_based returns list directly
+        elif 'selected_features' in feature_selection_result:
+            selected_features = feature_selection_result['selected_features']  # recursive returns list directly
+        else:
+            selected_features = feature_selection_result['confirmed_features']  # boruta returns list directly
+        
         X_train = feature_selection_result['X_reduced']
-        selected_features = feature_selection_result['top_features']['feature'].tolist()
         X_test = X_test[selected_features]
         
         logger.info(f"Selected {len(selected_features)} features")
@@ -158,19 +219,9 @@ def main(config_file: str = 'configs/config.json'):
     model_config = config.get('model', {})
     model_trainer = ModelTrainer(model_config)
     
-    # Select target horizon for training (use first horizon by default)
-    target_horizon = config.get('target', {}).get('calculation', {}).get('horizon', [1])[0]
-    target_col = f'target_{target_horizon}d'
-    
-    if target_col not in y_train.columns:
-        logger.error(f"Target column {target_col} not found in targets")
-        return
-    
-    # Extract single target column
+    # Extract target column for training
     y_train_single = y_train[target_col]
     y_test_single = y_test[target_col]
-    
-    logger.info(f"Training model for target horizon: {target_horizon} days")
     
     # Train final model
     logger.info(f"Training final {model_type} model...")
@@ -192,22 +243,29 @@ def main(config_file: str = 'configs/config.json'):
     # 7. Model Evaluation
     ###############################
     logger.info("Evaluating model performance...")
-    # Initialize model evaluator with output directory
-    eval_config = config.get('evaluation', {})
-    eval_config['output_dir'] = output_dir
-    eval_config['model_type'] = model_type
+    # Initialize model evaluator with comprehensive configuration
+    eval_config = {
+        'output_dir': output_dir,
+        'model_type': model_type,
+        'model': config.get('model', {}),
+        'evaluation': config.get('evaluation', {}),
+        'train_years': train_years,
+        'test_years': test_years,
+        'feature_selection': {
+            'enabled': feature_selection,
+            'method': 'filter_ticker_out_with_nan',
+            'original_features': X_train.shape[1],
+            'selected_features': len(selected_features)
+        }
+    }
     model_evaluator = YellowbrickEvaluator(eval_config)
     
     # Create predictions DataFrame
     logger.info("Making predictions on test data...")
     y_pred = model_trainer.predict(model=model, X=X_test)
     
-    # Create dummy target for filtering
-    dummy_y = pd.Series(0, index=X_test.index)
-    
-    # Filter test data using the same method
-    X_test_filtered, _, _, _ = model_trainer._filter_ticker_out_with_nan(X_test, dummy_y, X_test, dummy_y)
-    y_test_filtered = y_test_single.loc[X_test_filtered.index]
+    # Filter test data independently
+    X_test_filtered, y_test_filtered = filter_ticker_out_with_nan(X_test, y_test_single)
     
     # Create predictions DataFrame with probabilities
     probabilities = model.predict_proba(X_test_filtered)[:, 1] if hasattr(model, 'predict_proba') else None
@@ -234,10 +292,8 @@ def main(config_file: str = 'configs/config.json'):
     model_evaluator.generate_report()
     
     # Create learning curve using filtered training data
-    # Filter training data first
-    X_train_filtered, y_train_filtered, _, _ = model_trainer._filter_ticker_out_with_nan(
-        X_train, y_train_single, X_train, y_train_single
-    )
+    # Filter training data independently
+    X_train_filtered, y_train_filtered = filter_ticker_out_with_nan(X_train, y_train_single)
     
     model_evaluator.create_learning_curve(
         model=model,

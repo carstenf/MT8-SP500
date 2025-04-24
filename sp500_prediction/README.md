@@ -206,3 +206,47 @@ stock_explanation = explainer.explain_stock_prediction(
     ticker='AAPL',
     date=pd.Timestamp('2022-01-15')
 )
+```
+
+## Feature Selection & Importance
+
+The system supports multiple methods for feature selection and importance analysis:
+
+### Model-based Selection
+Uses trained model's feature importance to select top features:
+
+```json
+"feature_importance": {
+    "method": "model_based",
+    "model_type": "random_forest",  // Can be "random_forest", "xgboost", or "lightgbm"
+    "n_top_features": 30,           // Number of features to select
+    "n_repeats": 10,
+    "random_state": 42
+}
+```
+
+### Recursive Feature Elimination
+Iteratively removes least important features using cross-validation:
+
+```json
+"feature_importance": {
+    "method": "recursive",
+    "model_type": "random_forest",  // Can be "random_forest", "xgboost", or "lightgbm"
+    "cv_folds": 5,                  // Number of cross-validation folds
+    "scoring": "balanced_accuracy",  // Scoring metric for selection
+    "random_state": 42
+}
+```
+
+### Boruta Selection
+More sophisticated approach that compares feature importance against random "shadow" features:
+
+```json
+"feature_importance": {
+    "method": "boruta",
+    "n_estimators": "auto",
+    "random_state": 42
+}
+```
+
+Each method can use different underlying models and can be configured in the evaluation section of the config file.
