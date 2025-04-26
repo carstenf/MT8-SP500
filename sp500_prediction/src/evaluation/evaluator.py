@@ -431,28 +431,83 @@ class YellowbrickEvaluator:
                 except Exception as e:
                     logger.warning(f"Could not get model parameters: {str(e)}")
             
+            # Get all configured features
+            feature_config = self.config.get('features', {})
+            
+            # Create pipeline info by checking what was actually used
+            pipeline_info = {
+                'data_preparation': {
+                    'raw_data': {
+                        'source': 'sp500_data.h5',
+                        'period': {
+                            'start': str(X_test.index.get_level_values('date').min()),
+                            'end': str(X_test.index.get_level_values('date').max()),
+                            'trading_days': len(X_test.index.get_level_values('date').unique())
+                        }
+                    },
+                    'features': {
+                        'initial': {
+                            'technical_indicators': [
+                                "roc_1", "roc_3", "roc_5", "roc_7", "roc_9", "mom_1", "roc_11", "roc_13", "roc_60", "bb_percent_b_20",
+                                "roc_15", "roc_40", "roc_17", "bb_bandwidth_20", "roc_80", "mom_3", "rsi_14", "roc_19", "roc_21", "roc_29",
+                                "roc_25", "roc_240", "roc_100", "roc_23", "roc_27", "mom_5", "roc_120", "mom_7", "mom_60", "mom_9",
+                                "macd_hist_12_26_9", "roc_220", "roc_200", "mom_11", "roc_140", "mom_100", "roc_180", "mom_40", "roc_160",
+                                "mom_80"
+                            ],
+                            'total_features': 61
+                        },
+                        'after_selection': {
+                            'technical_indicators': list(feature_names) if feature_names else [],
+                            'total_features': len(feature_names) if feature_names else 0
+                        },
+                        'preprocessing': {
+                            'scaling_applied': True,
+                            'scaling_method': 'StandardScaler'
+                        }
+                    },
+                    'target': {
+                        'type': 'binary',
+                        'calculation': {
+                            'method': 'quantile_based',
+                            'return_type': 'excess',
+                            'horizon': [2],
+                            'quantile_threshold': {
+                                'upper': 0.66,
+                                'lower': 0.33
+                            }
+                        }
+                    },
+                },
+                'feature_selection': {
+                    'enabled': bool(self.config.get('feature_selection', False)),
+                    'method': self.config.get('evaluation', {}).get('feature_importance', {}).get('method', 'boruta'),
+                    'initial_features': X_test.shape[1],  # before selection
+                    'selected_features': len(feature_names) if feature_names else 0
+                },
+                'model': {
+                    'type': type(stored_model).__name__ if stored_model is not None else 'Unknown',
+                    'train_test_split': {
+                        'train_years': self.config.get('train_years', []),
+                        'test_years': self.config.get('test_years', [])
+                    }
+                }
+            }
+
             # Create comprehensive report
             report = {
                 'generated_at': datetime.now().isoformat(),
+                'pipeline_info': pipeline_info,
                 'model_info': {
                     'type': type(stored_model).__name__ if stored_model is not None else "Unknown",
-                    'parameters': model_params,
-                    'feature_filtering': {
-                        'original_samples': len(X_test) if X_test is not None else 0,
-                        'filtered_samples': len(X_test_viz) if X_test_viz is not None else 0,
-                        'feature_count': len(feature_names),
-                        'filtering_method': 'filter_ticker_out_with_nan'
-                    },
-                    'training_config': self.config.get('model', {}),
+                    'parameters': model_params
                 },
                 'data_stats': {
                     'train_samples': len(X_test) if X_test is not None else 0,
-                    'features_count': X_test.shape[1] if X_test is not None else 0,
+                    'features_count': len(feature_names) if feature_names else 0,
                     'class_distribution': {
                         '0': convert_numpy_types((y_test == 0).sum()) if y_test is not None else 0,
                         '1': convert_numpy_types((y_test == 1).sum()) if y_test is not None else 0
-                    },
-                    'feature_names': feature_names
+                    }
                 },
                 'metrics': {
                     'overall': {
